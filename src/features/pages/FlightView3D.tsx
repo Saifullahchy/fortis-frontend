@@ -18,6 +18,7 @@ import {
   PolylineDashMaterialProperty,
   PolylineGlowMaterialProperty,
   PolylineOutlineMaterialProperty,
+  Rectangle,
   ScreenSpaceEventHandler,
   ScreenSpaceEventType,
   Color,
@@ -37,6 +38,7 @@ import type { Point } from './missionGeometry'
 import type { TelemetryFrame } from './useMissionSimulation'
 import { drawHud, type HudTarget } from './hudOverlay'
 import { MAP_COLORS, routeLine } from './mapStyle'
+import { MOSAIC_BOUNDS, mosaicImage, pingMosaic } from './sonarMosaic'
 
 export type Basemap = 'satellite' | 'street' | 'tactical'
 export interface EditHandle {
@@ -67,6 +69,11 @@ interface Props {
   onViewChange?: (view: ViewRect) => void
   /** Frame the whole route when it first appears (live view), not just the base. */
   fitRoute?: boolean
+  /**
+   * Sonar mosaic to paint under the track (water craft with a sonar payload): one mosaic per
+   * key, fed a ping from every frame while the craft is under way.
+   */
+  sonarMosaic?: { key: string; gain: number }
   frame: TelemetryFrame | null
   trail: Point[]
   handles: EditHandle[]
@@ -160,7 +167,10 @@ export function FlightView3D({
   basemap: basemapProp = 'satellite',
   onViewChange,
   fitRoute = false,
+  sonarMosaic,
 }: Props) {
+  const mosaicRef = useRef(sonarMosaic)
+  mosaicRef.current = sonarMosaic
   const fittedFor = useRef('')
   const onViewRef = useRef(onViewChange)
   onViewRef.current = onViewChange
@@ -178,6 +188,9 @@ export function FlightView3D({
   const altLabel = useRef<Entity | null>(null)
   const trailEntity = useRef<Entity | null>(null)
   const shadow = useRef<Entity | null>(null)
+  /** Navigation uncertainty ring for water vehicles: dead reckoning widens it, a fix shrinks it. */
+  const uncertainty = useRef<Entity | null>(null)
+  const uncertaintyRadius = useRef(0)
   const aim = useRef<Cartesian3 | null>(null)
   const pose = useRef<{ orientation: Quaternion | undefined }>({ orientation: undefined })
   const hudSurface = useRef<HTMLCanvasElement>(null)
@@ -331,8 +344,14 @@ export function FlightView3D({
           r.angle[i] =
             (r.angle[i] + model.directions[i] * revPerSec * 2 * Math.PI * dt) % (2 * Math.PI)
       } else {
-        // Wheels: angular rate from ground speed over the rendered wheel radius.
-        const omega = speedRef.current / (0.23 * model.scale)
+        // Wheels: angular rate from ground speed over the rendered wheel radius. Propellers
+        // turn far faster for the same speed, and keep idling while the craft holds station.
+        const omega =
+          model.spinAxis === 'x'
+            ? mode === 'off'
+              ? 0
+              : 6 + speedRef.current * 7
+            : speedRef.current / (0.23 * model.scale)
         for (let i = 0; i < model.spinNodes.length; i++)
           r.angle[i] = (r.angle[i] - omega * dt) % (2 * Math.PI)
       }
@@ -710,6 +729,24 @@ export function FlightView3D({
       })
     }
 
+    // Sonar mosaic: what the sonar has seen so far, laid on the water under the track. The
+    // image is the mosaic's double buffer; a swap changes its identity, which reloads it.
+    if (mosaicRef.current) {
+      const key = mosaicRef.current.key
+      const sw = geo({ x: MOSAIC_BOUNDS.min.x, y: MOSAIC_BOUNDS.max.y })
+      const ne = geo({ x: MOSAIC_BOUNDS.max.x, y: MOSAIC_BOUNDS.min.y })
+      viewer.entities.add({
+        rectangle: {
+          coordinates: Rectangle.fromDegrees(sw.lng, sw.lat, ne.lng, ne.lat),
+          height: 0.25,
+          material: new ImageMaterialProperty({
+            image: new CallbackProperty(() => mosaicImage(key, performance.now()), false) as never,
+            transparent: true,
+          }),
+        },
+      })
+    }
+
     // Completed part of the flight: the same line in the flown colour.
     trailEntity.current = viewer.entities.add({
       polyline: routeLine(() => lines.current.trail, MAP_COLORS.flown),
@@ -772,6 +809,25 @@ export function FlightView3D({
         disableDepthTestDistance: Number.POSITIVE_INFINITY,
       },
     })
+    uncertainty.current = viewer.entities.add({
+      position: Cartesian3.fromDegrees(h.lng, h.lat, 0.2) as never,
+      show: false,
+      ellipse: {
+        semiMajorAxis: new CallbackProperty(
+          () => Math.max(uncertaintyRadius.current, 0.5),
+          false,
+        ) as never,
+        semiMinorAxis: new CallbackProperty(
+          () => Math.max(uncertaintyRadius.current, 0.5),
+          false,
+        ) as never,
+        material: TEAL.withAlpha(0.1),
+        outline: true,
+        outlineColor: TEAL.withAlpha(0.55),
+        outlineWidth: 1.5,
+        height: 0.2,
+      },
+    })
     drone.current = viewer.entities.add({
       position: Cartesian3.fromDegrees(h.lng, h.lat, 0) as never,
       viewFrom: new ConstantProperty(new Cartesian3(0, -320, 200)) as never,
@@ -791,7 +847,11 @@ export function FlightView3D({
                 new TranslationRotationScale(
                   Cartesian3.ZERO,
                   Quaternion.fromAxisAngle(
-                    model.spinAxis === 'y' ? Cartesian3.UNIT_Y : Cartesian3.UNIT_Z,
+                    model.spinAxis === 'y'
+                      ? Cartesian3.UNIT_Y
+                      : model.spinAxis === 'x'
+                        ? Cartesian3.UNIT_X
+                        : Cartesian3.UNIT_Z,
                     rotor.current.angle[i],
                   ),
                 ),
@@ -910,6 +970,9 @@ export function FlightView3D({
     const e = drone.current
     if (!e || !frame) return
     const g = geo(frame.position)
+    const mosaic = mosaicRef.current
+    if (mosaic && frame.water && frame.phase !== 'standby' && frame.phase !== 'complete')
+      pingMosaic(mosaic.key, frame, profile.domain === 'underwater', mosaic.gain, performance.now())
     const airborne = air && (frame.altitude > 0 || frame.groundSpeed > 0)
     spin.current = airborne || (frame.phase !== 'standby' && frame.phase !== 'complete')
     // Hover bob and a faint airframe vibration keep the aircraft alive even when holding.
@@ -967,6 +1030,28 @@ export function FlightView3D({
         aim.current = at(alt * Math.tan(CesiumMath.toRadians(tilt)), 0)
         lines.current.outline = [...corners, corners[0]]
         lines.current.edges = corners.map(c => [pos, c])
+      } else if (frame.water) {
+        // Sonar coverage on the water: the forward-looking fan (120°, 50 m) plus the side-scan
+        // swath across the track, as wide as the sonar's reach over this depth of water.
+        const reachM = 50
+        const arc: Cartesian3[] = []
+        for (let a = -60; a <= 60; a += 10) {
+          const rad = CesiumMath.toRadians(a)
+          arc.push(at(Math.cos(rad) * reachM, Math.sin(rad) * reachM))
+        }
+        const origin = at(0.6, 0)
+        const under = profile.domain === 'underwater'
+        const over = under ? frame.water.altitudeAboveBottom : frame.water.seabed
+        const halfSwath = Math.min(40, Math.max(4, over * 1.25))
+        const swath = [at(-3, -halfSwath), at(3, -halfSwath), at(3, halfSwath), at(-3, halfSwath)]
+        lines.current.outline = [origin, ...arc, origin]
+        lines.current.edges = [
+          [swath[0], swath[1], swath[2], swath[3], swath[0]],
+          [at(-3, 0), at(3, 0)],
+          [],
+          [],
+        ]
+        aim.current = at(20, 0)
       } else {
         // Forward sensor fan on the ground: a 100° lidar/sonar wedge, 30 m deep.
         const reachM = 30
@@ -1011,9 +1096,20 @@ export function FlightView3D({
         Cartesian3.fromDegrees(g.lng, g.lat, alt / 2),
       ) as never
       if (altLabel.current.label) {
-        altLabel.current.label.text = new ConstantProperty(`${Math.round(alt)} m`) as never
-        altLabel.current.label.show = new ConstantProperty(air) as never
+        const depth = frame.water?.depth ?? 0
+        altLabel.current.label.text = new ConstantProperty(
+          air ? `${Math.round(alt)} m` : `↓ ${depth.toFixed(1)} m`,
+        ) as never
+        altLabel.current.label.show = new ConstantProperty(air || depth > 0.5) as never
       }
+    }
+    if (uncertainty.current) {
+      const err = frame.water?.positionError ?? 0
+      uncertainty.current.position = new ConstantProperty(
+        Cartesian3.fromDegrees(g.lng, g.lat, 0.2),
+      ) as never
+      uncertaintyRadius.current = err
+      uncertainty.current.show = !!frame.water && err > 2.5
     }
     lines.current.stem = air ? [Cartesian3.fromDegrees(g.lng, g.lat, 0), pos] : []
     if (hud) {

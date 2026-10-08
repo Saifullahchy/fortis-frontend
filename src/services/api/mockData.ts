@@ -120,6 +120,28 @@ export const vehicles: Vehicle[] = [
     link: 61,
     capabilities: ['goto', 'dive', 'surface', 'hold', 'sonar'],
   },
+  {
+    id: 'UUV-002',
+    name: 'Reef Rover',
+    type: 'UUV',
+    status: 'online',
+    health: 'healthy',
+    battery: 82,
+    protocol: 'MAVLink',
+    controller: 'ArduSub',
+    firmware: '4.5.3',
+    board: 'Navigator (BlueOS)',
+    connection: 'TETHER',
+    mode: 'MANUAL',
+    mission: '—',
+    lastSeen: 'Now',
+    lat: 61,
+    lng: 79,
+    heading: 95,
+    speed: 0,
+    link: 99,
+    capabilities: ['goto', 'manualControl', 'dive', 'surface', 'hold', 'video', 'sonar'],
+  },
 ]
 export const missions: Mission[] = [
   {

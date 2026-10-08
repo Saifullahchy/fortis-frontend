@@ -8,7 +8,7 @@ import type {
 } from '../../types/domain'
 import type { BadgeTone } from '../../components/common'
 import type { MissionStage, TelemetryFrame } from '../pages/missionSimulator'
-import { terrainHeight } from '../pages/missionSimulator'
+import { seabedDepth, terrainHeight } from '../pages/missionSimulator'
 import type { Pattern, Point, Route } from '../pages/missionGeometry'
 import type { ModelKind } from '../pages/vehicleModels'
 import type { StreetLeg } from '../map/streetNetwork'
@@ -114,7 +114,19 @@ export interface LiveContext {
   newerDraft: boolean
 }
 export type StripIcon =
-  'speed' | 'altitude' | 'time' | 'gps' | 'camera' | 'grade' | 'odometer' | 'elevation'
+  | 'speed'
+  | 'altitude'
+  | 'time'
+  | 'gps'
+  | 'camera'
+  | 'grade'
+  | 'odometer'
+  | 'elevation'
+  | 'depth'
+  | 'course'
+  | 'link'
+  | 'fix'
+  | 'pressure'
 export interface StripItem {
   icon: StripIcon
   label: string
@@ -172,6 +184,9 @@ export interface VehicleProfile {
   strip: (frame: TelemetryFrame) => StripItem[]
   hudTitle: (frame: TelemetryFrame, callsign: string) => string
 }
+
+const isLive = (stage: MissionStage) =>
+  stage === 'active' || stage === 'holding' || stage === 'manual' || stage === 'returning'
 
 export const stageTone = (stage: MissionStage): BadgeTone =>
   stage === 'active' || stage === 'returning'
@@ -488,6 +503,15 @@ function maxGradeAlong(samples: Point[], metersPerUnit: number) {
   }
   return Math.round(max * 10) / 10
 }
+
+/** Shallowest water along the planned route, metres, from the synthetic bathymetry. */
+function minSeabedAlong(samples: Point[], metersPerUnit: number) {
+  let min = Infinity
+  for (const p of samples) min = Math.min(min, seabedDepth(p, metersPerUnit))
+  return Number.isFinite(min) ? Math.round(min * 10) / 10 : 0
+}
+
+const knots = (ms: number) => `${(ms * 1.944).toFixed(1)} kts`
 
 function powerAndLinkAlerts(frame: TelemetryFrame, stopWord: string): LiveAlert[] {
   const list: LiveAlert[] = []
@@ -914,10 +938,82 @@ const UGV: VehicleProfile = {
       .join(' · '),
 }
 
+const MARINE_AREA_PRESETS: Record<string, AreaPreset> = {
+  'Harbour lines': {
+    points: [
+      { x: 150, y: 150 },
+      { x: 540, y: 125 },
+      { x: 570, y: 520 },
+      { x: 180, y: 560 },
+    ],
+    zones: [
+      [
+        { x: 330, y: 300 },
+        { x: 400, y: 290 },
+        { x: 410, y: 360 },
+        { x: 340, y: 370 },
+      ],
+    ],
+    spacing: 30,
+    overlap: 0,
+  },
+  'Channel sweep': {
+    points: [
+      { x: 200, y: 400 },
+      { x: 640, y: 180 },
+      { x: 700, y: 300 },
+      { x: 260, y: 520 },
+    ],
+    zones: [],
+    spacing: 20,
+    overlap: 0,
+  },
+}
+const DIVE_AREA_PRESETS: Record<string, AreaPreset> = {
+  'Reef lawnmower': {
+    points: [
+      { x: 220, y: 300 },
+      { x: 480, y: 280 },
+      { x: 500, y: 500 },
+      { x: 240, y: 520 },
+    ],
+    zones: [],
+    spacing: 12,
+    overlap: 0,
+  },
+  'Wreck box': {
+    points: [
+      { x: 380, y: 330 },
+      { x: 560, y: 320 },
+      { x: 570, y: 470 },
+      { x: 390, y: 480 },
+    ],
+    zones: [],
+    spacing: 8,
+    overlap: 0,
+  },
+}
+
+const marineStages: Record<MissionStage, string> = {
+  standby: 'MOORED',
+  armed: 'READY',
+  active: 'UNDER WAY',
+  holding: 'ON STATION',
+  manual: 'HELM',
+  returning: 'RETURNING',
+  complete: 'MOORED',
+  aborted: 'E-STOP',
+}
+
+/**
+ * Surface vessel (ArduPilot Boat class). Moves on the water plane like a rover on the ground,
+ * but the water moves too: it crabs into the current, keeps station at stops instead of
+ * parking, and its hazards are shoals and shorelines rather than grade and buildings.
+ */
 const USV: VehicleProfile = {
-  ...UGV,
   type: 'USV',
   domain: 'surface',
+  live: true,
   model: 'boat',
   instruments: 'attitude',
   payload: 'sonar',
@@ -938,8 +1034,27 @@ const USV: VehicleProfile = {
     commandsLabel: 'HELM COMMANDS',
     timeLabel: 'UNDER WAY',
   },
-  stages: { ...groundStages, active: 'UNDER WAY', holding: 'HOLDING', complete: 'MOORED' },
-  commands: { ...UGV.commands, hold: 'HOLD', stop: 'MOOR' },
+  stages: marineStages,
+  commands: {
+    arm: 'ARM',
+    launch: 'SAIL',
+    hold: 'HOLD STATION',
+    resume: 'RESUME',
+    return: 'TO BASE',
+    stop: 'MOOR',
+    abort: 'E-STOP',
+  },
+  modes: [
+    { id: 'route', label: 'Transit', title: 'New transit mission', geometry: 'points' },
+    {
+      id: 'patrol',
+      label: 'Patrol',
+      title: 'New patrol mission',
+      geometry: 'points',
+      closed: true,
+    },
+    { id: 'coverage', label: 'Survey', title: 'New survey mission', geometry: 'area' },
+  ],
   parameters: [
     {
       id: 'speed',
@@ -953,7 +1068,7 @@ const USV: VehicleProfile = {
     },
     {
       id: 'spacing',
-      label: 'Swath spacing',
+      label: 'Line spacing',
       min: 10,
       max: 80,
       unit: 'm',
@@ -963,9 +1078,10 @@ const USV: VehicleProfile = {
     },
     {
       id: 'dwell',
-      label: 'Hold at waypoint',
+      label: 'Hold on station',
       min: 0,
-      max: 120,
+      max: 300,
+      step: 10,
       unit: 's',
       default: 0,
       group: 'primary',
@@ -1001,6 +1117,16 @@ const USV: VehicleProfile = {
       modes: ['route', 'patrol'],
     },
     {
+      id: 'minDepth',
+      label: 'Shoal depth limit',
+      min: 1,
+      max: 10,
+      step: 0.5,
+      unit: 'm',
+      default: 2.5,
+      group: 'failsafe',
+    },
+    {
       id: 'standoff',
       label: 'Shore standoff',
       min: 5,
@@ -1010,36 +1136,84 @@ const USV: VehicleProfile = {
       group: 'failsafe',
     },
   ],
-  linkLossActions: ['Hold station', 'Return to base', 'Continue'],
+  linkLossActions: ['Hold station', 'Return to base', 'Continue mission'],
   limits: { maxSpeed: 12, enduranceMin: 240, batteryReserve: 20 },
+  dwellParam: 'dwell',
   presets: {
-    area: AREA_PRESETS,
+    area: MARINE_AREA_PRESETS,
     points: POINT_PRESETS,
     loop: LOOP_PRESETS,
     orbit: NO_PRESETS,
     maneuver: NO_PRESETS,
   },
-  checks: ctx => [
-    geometryCheck(ctx),
-    ...zoneCheck(ctx),
-    ...vehicleChecks(ctx, 20),
-    {
-      label: 'Speed',
-      detail: `${ctx.draft.params.speed} m/s · limit 12 m/s`,
-      level: ctx.draft.params.speed <= 12 ? 'pass' : 'warn',
-    },
-  ],
+  checks: ctx => {
+    const shoal = ctx.route ? minSeabedAlong(ctx.samples, ctx.metersPerUnit) : 0
+    const limit = ctx.draft.params.minDepth ?? 2.5
+    return [
+      geometryCheck(ctx),
+      ...zoneCheck(ctx),
+      ...vehicleChecks(ctx, USV.limits.batteryReserve),
+      {
+        label: 'Depth under keel',
+        detail: ctx.route
+          ? `${shoal.toFixed(1)} m shallowest · limit ${limit} m`
+          : `limit ${limit} m`,
+        level: !ctx.route || shoal >= limit ? 'pass' : shoal >= limit * 0.7 ? 'warn' : 'fail',
+      },
+      ...(ctx.mode.geometry === 'area'
+        ? [
+            {
+              label: 'Survey lines',
+              detail: `${ctx.draft.params.spacing} m spacing · sonar swath ≈ ${Math.round(shoal * 2.5)} m at ${shoal.toFixed(0)} m depth`,
+              level: (ctx.draft.params.spacing <= Math.max(10, shoal * 2.5)
+                ? 'pass'
+                : 'warn') as CheckLevel,
+            },
+          ]
+        : []),
+      ...(ctx.stops && ctx.draft.params.dwell
+        ? [
+            {
+              label: 'Station keeping',
+              detail: `${ctx.stops} stops · ${ctx.draft.params.dwell} s each · 4 m loiter radius`,
+              level: 'pass' as CheckLevel,
+            },
+          ]
+        : []),
+      {
+        label: 'Speed',
+        detail: `${ctx.draft.params.speed} m/s (${knots(ctx.draft.params.speed)}) · limit ${USV.limits.maxSpeed} m/s`,
+        level: ctx.draft.params.speed <= USV.limits.maxSpeed ? 'pass' : 'warn',
+      },
+    ]
+  },
   summary: ctx =>
     ctx.mode.geometry === 'area'
-      ? [[`${ctx.areaHa.toFixed(1)} ha`, 'COVERAGE']]
+      ? [[`${ctx.areaHa.toFixed(1)} ha`, 'SURVEY']]
       : [
           [`${ctx.draft.waypoints.length}`, 'WAYPOINTS'],
           ...(ctx.mode.closed ? [[`${ctx.draft.repeats}`, 'LAPS'] as [string, string]] : []),
         ],
   alerts: ({ frame, stage, plan, limits, newerDraft }) => {
     const list = powerAndLinkAlerts(frame, 'hold station')
+    const w = frame.water
     if (Math.abs(frame.roll) > 15)
       list.push({ level: 'warn', text: `Heel ${Math.abs(frame.roll).toFixed(0)}°` })
+    if (w && isLive(stage) && w.seabed < 2.5)
+      list.push({
+        level: w.seabed < 1.8 ? 'critical' : 'warn',
+        text: `Shoal water · ${w.seabed.toFixed(1)} m under keel`,
+      })
+    if (w && frame.ground && frame.ground.driveMode === 'auto' && frame.ground.crossTrack > 3)
+      list.push({
+        level: 'warn',
+        text: `Set ${frame.ground.crossTrack.toFixed(0)} m off track · current ${knots(w.drift)} toward ${String(w.set).padStart(3, '0')}°`,
+      })
+    if (frame.ground && frame.ground.driveMode === 'manual' && frame.ground.crossTrack > 8)
+      list.push({
+        level: 'warn',
+        text: `Off route by ${frame.ground.crossTrack.toFixed(0)} m · helm`,
+      })
     if (plan && plan.speed > limits.maxSpeed)
       list.push({
         level: 'warn',
@@ -1052,25 +1226,40 @@ const USV: VehicleProfile = {
     return list
   },
   strip: frame => [
-    { icon: 'speed', label: 'SPEED', value: `${(frame.groundSpeed * 1.944).toFixed(1)} kts` },
-    { icon: 'elevation', label: 'HEEL', value: `${Math.abs(frame.roll).toFixed(0)}°` },
+    { icon: 'speed', label: 'SOG', value: knots(frame.groundSpeed) },
+    {
+      icon: 'course',
+      label: 'COG',
+      value: `${String(Math.round(frame.water?.course ?? frame.heading)).padStart(3, '0')}°`,
+    },
+    { icon: 'depth', label: 'UNDER KEEL', value: `${(frame.water?.seabed ?? 0).toFixed(1)} m` },
     { icon: 'time', label: 'UNDER WAY', value: clock(frame.elapsedSeconds) },
     { icon: 'gps', label: 'GPS', value: `RTK FIX · ${frame.satellites}` },
     { icon: 'odometer', label: 'LOG', value: `${(frame.distance / 1852).toFixed(2)} nm` },
   ],
   hudTitle: (frame, callsign) =>
-    [callsign, `${(frame.groundSpeed * 1.944).toFixed(1)} kts`].join(' · '),
+    [
+      callsign,
+      knots(frame.groundSpeed),
+      frame.water?.stationKeeping
+        ? 'ON STATION'
+        : `COG ${String(Math.round(frame.water?.course ?? frame.heading)).padStart(3, '0')}°`,
+    ].join(' · '),
 }
 
+/**
+ * Underwater vehicle (ArduSub class). Depth is the extra axis; there is no GPS below the surface,
+ * so position is dead reckoning corrected by acoustic fixes, and the link is a tether (live) or
+ * an acoustic modem (sparse). Every failsafe ends the same way: surface.
+ */
 const UUV: VehicleProfile = {
-  ...UGV,
   type: 'UUV',
   domain: 'underwater',
-  live: false,
-  model: 'boat',
+  live: true,
+  model: 'submersible',
   instruments: 'attitude',
   payload: 'sonar',
-  teleop: false,
+  teleop: true,
   surfaceBound: true,
   streetRouting: false,
   words: {
@@ -1087,14 +1276,42 @@ const UUV: VehicleProfile = {
     commandsLabel: 'DIVE COMMANDS',
     timeLabel: 'DIVE TIME',
   },
-  stages: { ...groundStages, active: 'DIVING', holding: 'HOLDING', complete: 'SURFACED' },
-  commands: { ...UGV.commands, launch: 'DIVE', hold: 'HOLD', stop: 'SURFACE' },
+  stages: {
+    standby: 'SURFACED',
+    armed: 'READY',
+    active: 'DIVING',
+    holding: 'DEPTH HOLD',
+    manual: 'PILOTED',
+    returning: 'RETURNING',
+    complete: 'SURFACED',
+    aborted: 'ABORTED',
+  },
+  commands: {
+    arm: 'ARM',
+    launch: 'DIVE',
+    hold: 'HOLD DEPTH',
+    resume: 'RESUME',
+    return: 'TO BASE',
+    stop: 'SURFACE',
+    abort: 'ABORT',
+  },
   modes: [
     { id: 'route', label: 'Transect', title: 'New transect mission', geometry: 'points' },
     { id: 'patrol', label: 'Loop', title: 'New loop mission', geometry: 'points', closed: true },
+    { id: 'coverage', label: 'Lawnmower', title: 'New lawnmower survey', geometry: 'area' },
   ],
   parameters: [
-    { id: 'altitude', label: 'Depth', min: 2, max: 100, unit: 'm', default: 20, group: 'primary' },
+    { id: 'altitude', label: 'Depth', min: 1, max: 60, unit: 'm', default: 8, group: 'primary' },
+    {
+      id: 'bottomClearance',
+      label: 'Bottom clearance',
+      min: 1,
+      max: 10,
+      step: 0.5,
+      unit: 'm',
+      default: 3,
+      group: 'primary',
+    },
     {
       id: 'speed',
       label: 'Speed',
@@ -1106,6 +1323,16 @@ const UUV: VehicleProfile = {
       group: 'primary',
     },
     {
+      id: 'spacing',
+      label: 'Line spacing',
+      min: 5,
+      max: 40,
+      unit: 'm',
+      default: 12,
+      group: 'primary',
+      modes: ['coverage'],
+    },
+    {
       id: 'dwell',
       label: 'Hold at waypoint',
       min: 0,
@@ -1113,6 +1340,7 @@ const UUV: VehicleProfile = {
       unit: 's',
       default: 0,
       group: 'primary',
+      modes: ['route', 'patrol'],
     },
     {
       id: 'acceptRadius',
@@ -1131,6 +1359,7 @@ const UUV: VehicleProfile = {
       unit: 'm',
       default: 8,
       group: 'primary',
+      modes: ['route', 'patrol'],
     },
     {
       id: 'clearance',
@@ -1140,39 +1369,141 @@ const UUV: VehicleProfile = {
       unit: 'm',
       default: 8,
       group: 'primary',
+      modes: ['route', 'patrol'],
     },
     {
       id: 'maxDepth',
       label: 'Depth limit',
-      min: 10,
-      max: 150,
+      min: 5,
+      max: 100,
       unit: 'm',
-      default: 60,
+      default: 40,
       group: 'failsafe',
     },
   ],
-  linkLossActions: ['Surface', 'Hold', 'Return to base'],
-  limits: { maxSpeed: 4, enduranceMin: 300, batteryReserve: 25 },
+  linkLossActions: ['Surface', 'Hold depth', 'Return to base'],
+  limits: { maxSpeed: 4, maxAltitude: 40, enduranceMin: 300, batteryReserve: 25 },
+  dwellParam: 'dwell',
   presets: {
-    area: NO_PRESETS,
+    area: DIVE_AREA_PRESETS,
     points: POINT_PRESETS,
     loop: LOOP_PRESETS,
     orbit: NO_PRESETS,
     maneuver: NO_PRESETS,
   },
-  checks: ctx => [
-    geometryCheck(ctx),
-    ...vehicleChecks(ctx, 25),
-    {
-      label: 'Depth',
-      detail: `${ctx.draft.params.altitude} m · limit ${ctx.draft.params.maxDepth} m`,
-      level: ctx.draft.params.altitude <= ctx.draft.params.maxDepth ? 'pass' : 'fail',
-    },
-  ],
+  checks: ctx => {
+    const depth = ctx.draft.params.altitude
+    const clearance = ctx.draft.params.bottomClearance ?? 3
+    const shoal = ctx.route ? minSeabedAlong(ctx.samples, ctx.metersPerUnit) : 0
+    const lifts = ctx.route && depth > shoal - clearance
+    return [
+      geometryCheck(ctx),
+      ...zoneCheck(ctx),
+      ...vehicleChecks(ctx, UUV.limits.batteryReserve),
+      {
+        label: 'Depth',
+        detail: `${depth} m · limit ${ctx.draft.params.maxDepth} m`,
+        level: depth <= ctx.draft.params.maxDepth ? 'pass' : 'fail',
+      },
+      {
+        label: 'Seabed clearance',
+        detail: ctx.route
+          ? lifts
+            ? `Shallowest ${shoal.toFixed(1)} m · lifts to ${Math.max(0, shoal - clearance).toFixed(1)} m to keep ${clearance} m clearance`
+            : `Shallowest ${shoal.toFixed(1)} m · ${(shoal - depth).toFixed(1)} m above bottom at depth`
+          : `${clearance} m above the bottom`,
+        level: !ctx.route ? 'pass' : lifts ? 'warn' : 'pass',
+      },
+      {
+        label: 'Navigation',
+        detail: ctx.vehicle.connection.toLowerCase().includes('tether')
+          ? 'Tethered · live position from the surface'
+          : 'Dead reckoning · USBL fix every 8 s · surface fix at the end',
+        level: 'pass',
+      },
+      {
+        label: 'Speed',
+        detail: `${ctx.draft.params.speed} m/s (${knots(ctx.draft.params.speed)}) · limit ${UUV.limits.maxSpeed} m/s`,
+        level: ctx.draft.params.speed <= UUV.limits.maxSpeed ? 'pass' : 'warn',
+      },
+    ]
+  },
   summary: ctx => [
-    [`${ctx.draft.waypoints.length}`, 'WAYPOINTS'],
+    ...(ctx.mode.geometry === 'area'
+      ? [[`${ctx.areaHa.toFixed(1)} ha`, 'SURVEY'] as [string, string]]
+      : [[`${ctx.draft.waypoints.length}`, 'WAYPOINTS'] as [string, string]]),
     [`${ctx.draft.params.altitude} m`, 'DEPTH'],
   ],
+  alerts: ({ frame, stage, plan, limits, newerDraft }) => {
+    const list = powerAndLinkAlerts(frame, 'surface')
+    const w = frame.water
+    if (w?.leak) list.push({ level: 'critical', text: 'Leak detected · surfacing' })
+    if (w && w.internalPressure > 103)
+      list.push({
+        level: 'warn',
+        text: `Hull pressure ${w.internalPressure.toFixed(1)} kPa rising`,
+      })
+    if (w && w.depth > limits.maxAltitude)
+      list.push({
+        level: 'critical',
+        text: `Depth ${w.depth.toFixed(1)} m exceeds ${limits.maxAltitude} m limit · surface`,
+      })
+    if (w && isLive(stage) && w.depth > 1 && w.altitudeAboveBottom < 1.5)
+      list.push({
+        level: 'warn',
+        text: `Bottom proximity · ${w.altitudeAboveBottom.toFixed(1)} m above seabed`,
+      })
+    if (w && w.positionError > 10)
+      list.push({
+        level: w.positionError > 20 ? 'critical' : 'warn',
+        text: `Navigation error ±${w.positionError.toFixed(0)} m · surface for a GPS fix`,
+      })
+    if (w && w.linkInterval && w.linkAge > w.linkInterval * 2)
+      list.push({ level: 'warn', text: `No status packet for ${w.linkAge.toFixed(0)} s` })
+    if (Math.abs(frame.pitch) > 20)
+      list.push({
+        level: 'warn',
+        text: `Pitch ${Math.abs(frame.pitch).toFixed(0)}° · steep dive angle`,
+      })
+    if (plan && plan.speed > limits.maxSpeed)
+      list.push({
+        level: 'warn',
+        text: `Plan speed ${plan.speed} m/s exceeds ${limits.maxSpeed} m/s limit`,
+      })
+    if (newerDraft && plan)
+      list.push({ level: 'warn', text: 'Newer plan draft not uploaded · diving previous version' })
+    if (stage === 'aborted')
+      list.push({ level: 'critical', text: 'Abort · drop weight released, surfacing' })
+    return list
+  },
+  strip: frame => {
+    const w = frame.water
+    return [
+      { icon: 'depth', label: 'DEPTH', value: `${(w?.depth ?? 0).toFixed(1)} m` },
+      {
+        icon: 'elevation',
+        label: 'ABOVE BOTTOM',
+        value: `${(w?.altitudeAboveBottom ?? 0).toFixed(1)} m`,
+      },
+      { icon: 'speed', label: 'SPEED', value: knots(frame.groundSpeed) },
+      { icon: 'time', label: 'DIVE TIME', value: clock(frame.elapsedSeconds) },
+      { icon: 'fix', label: 'NAV ERROR', value: `±${(w?.positionError ?? 0).toFixed(1)} m` },
+      {
+        icon: 'link',
+        label: 'LAST CONTACT',
+        value: w?.linkInterval ? `${(w.linkAge ?? 0).toFixed(0)} s ago` : 'TETHER · LIVE',
+      },
+    ]
+  },
+  hudTitle: (frame, callsign) =>
+    [
+      callsign,
+      `${(frame.water?.depth ?? 0).toFixed(1)} m`,
+      knots(frame.groundSpeed),
+      frame.water ? `±${frame.water.positionError.toFixed(0)} m` : '',
+    ]
+      .filter(Boolean)
+      .join(' · '),
 }
 
 const PROFILES: Record<VehicleType, VehicleProfile> = { UAV, UGV, USV, UUV }

@@ -124,6 +124,16 @@ export function SimulationHud({
             <dt>ALT</dt>
             <dd>{f?.altitude ?? 0} m</dd>
           </div>
+        ) : profile.domain === 'underwater' ? (
+          <div>
+            <dt>DEPTH</dt>
+            <dd>{(f?.water?.depth ?? 0).toFixed(1)} m</dd>
+          </div>
+        ) : profile.domain === 'surface' ? (
+          <div>
+            <dt>UKC</dt>
+            <dd>{(f?.water?.seabed ?? 0).toFixed(1)} m</dd>
+          </div>
         ) : (
           <div>
             <dt>GRADE</dt>

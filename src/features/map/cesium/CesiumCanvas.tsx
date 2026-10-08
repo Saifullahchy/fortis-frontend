@@ -20,8 +20,9 @@ const positions: Record<string, [number, number]> = {
   'UAV-002': [90.36, 23.81],
   'UGV-001': [90.39, 23.76],
   'UGV-002': [90.45, 23.82],
-  'USV-001': [90.46, 23.74],
-  'UUV-001': [90.44, 23.77],
+  'USV-001': [92.3292, 20.6305],
+  'UUV-001': [92.3308, 20.6292],
+  'UUV-002': [92.3286, 20.6316],
 }
 
 function providerFor(mode: MapMode) {

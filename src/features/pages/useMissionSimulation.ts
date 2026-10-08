@@ -60,6 +60,8 @@ export function useMissionSimulation(options: Options): TelemetrySource {
     dwellSeconds,
     acceptMeters,
     enduranceMin,
+    linkKind,
+    bottomClearance,
   } = options
   const sim = simulatorFor(vehicleId)
   const [out, back] = transitUnits
@@ -79,6 +81,8 @@ export function useMissionSimulation(options: Options): TelemetrySource {
       dwellSeconds,
       acceptMeters,
       enduranceMin,
+      linkKind,
+      bottomClearance,
     })
   }, [
     sim,
@@ -96,6 +100,8 @@ export function useMissionSimulation(options: Options): TelemetrySource {
     dwellSeconds,
     acceptMeters,
     enduranceMin,
+    linkKind,
+    bottomClearance,
   ])
   const state = useSyncExternalStore(sim.subscribe, sim.getState)
   return {

@@ -6280,3 +6280,147 @@ a.mp-btn {
   display: flex;
   align-items: center;
 }
+
+/* ---- marine instruments ---------------------------------------------------------------- */
+.depth-gauge,
+.current-rose {
+  position: relative;
+  width: 120px;
+  height: 120px;
+  border: 1px solid #4a5d69;
+  border-radius: 50%;
+  background: #0a131bd9;
+  display: grid;
+  place-items: center;
+}
+.depth-gauge b,
+.current-rose b {
+  position: absolute;
+  left: 50%;
+  bottom: -18px;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font: 600 10px var(--title);
+  letter-spacing: 0.6px;
+  color: #dbe3e7;
+  background: #0a141cdc;
+  padding: 2px 6px;
+  border: 1px solid #33444e;
+}
+.depth-gauge line {
+  stroke: #bfe6f2;
+  stroke-width: 0.8;
+}
+.depth-gauge text.dg-tick {
+  fill: #bfe6f2;
+  font: 600 5px var(--title);
+}
+.depth-gauge line.dg-limit {
+  stroke: #ff5a5a;
+  stroke-width: 1;
+  stroke-dasharray: 3 2;
+}
+.depth-gauge line.dg-clearance {
+  stroke: #ffd21f;
+  stroke-width: 1.2;
+  stroke-dasharray: 1.5 1.5;
+}
+.depth-gauge .dg-hull {
+  fill: #ffd21f;
+}
+.depth-gauge.warn {
+  border-color: #ff8a3d;
+  box-shadow: 0 0 0 2px #ff8a3d55;
+}
+.depth-gauge.warn .dg-hull {
+  fill: #ff8a3d;
+}
+.current-rose .cr-dial {
+  fill: #0c1a22;
+}
+.current-rose .cr-tick {
+  stroke: #6f8591;
+  stroke-width: 0.8;
+}
+.current-rose .cr-n {
+  fill: #ff5a5a;
+  font: 700 7px var(--title);
+  text-anchor: middle;
+}
+.current-rose .cr-loiter {
+  fill: none;
+  stroke: #4a5d69;
+  stroke-width: 0.8;
+  stroke-dasharray: 2 2;
+}
+.current-rose .cr-loiter.on {
+  stroke: #39d0ff;
+  fill: #39d0ff22;
+}
+.current-rose .cr-current line,
+.current-rose .cr-current path {
+  stroke: #ffb347;
+  fill: #ffb347;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+}
+.current-rose .cr-course line {
+  stroke: #39d0ff;
+  stroke-width: 1.2;
+  stroke-dasharray: 3 2;
+}
+.current-rose .cr-course circle {
+  fill: #39d0ff;
+}
+.current-rose .cr-heading path {
+  fill: #ffffff;
+  stroke: #0a131b;
+  stroke-width: 0.6;
+}
+.current-rose.station {
+  border-color: #39d0ff;
+}
+.live-feed.underwater .lf-view::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at 50% 60%, rgba(140, 230, 240, 0.18), rgba(2, 20, 30, 0.35) 75%),
+    linear-gradient(180deg, rgba(0, 40, 60, 0.08), rgba(0, 10, 20, 0.25));
+  pointer-events: none;
+}
+.live-feed.underwater .lf-view {
+  position: relative;
+}
+
+.current-rose text.cr-deg {
+  fill: #9fb3bd;
+  font: 600 5px var(--title);
+  text-anchor: middle;
+}
+.current-rose text.cr-card {
+  fill: #e6edf0;
+  font: 700 6.5px var(--title);
+  text-anchor: middle;
+}
+.current-rose text.cr-card.n {
+  fill: #ff5a5a;
+}
+.sonar-view {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  background: #03101a;
+}
+
+/* Second feed tile sits to the right of the first; the map PiP or the other feed holds slot 1. */
+.live-feed.slot-2:not(.primary) {
+  left: 348px;
+}
+.live-feed.sonar:not(.primary) {
+  border-color: #b8862f;
+}
+.live-feed.sonar .lf-rec i {
+  background: #ffb347;
+}

@@ -20,7 +20,9 @@ export function HomeSourceChip() {
       ? 'VEHICLE GPS'
       : home.source === 'device'
         ? `DEVICE GPS${home.accuracy ? ` ±${Math.round(home.accuracy)} m` : ''}`
-        : 'DEFAULT SECTOR'
+        : home.sector === 'coastal'
+          ? 'COASTAL SECTOR'
+          : 'DEFAULT SECTOR'
   const title = `${placeLabel(place)} · ${fmt(home.lat, home.lng)}${age !== null ? ` · updated ${age}s ago` : ''}${home.error ? ` · ${home.error}` : ''}`
   return (
     <span className={`home-chip ${home.source}`} title={title}>

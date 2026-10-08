@@ -17,7 +17,7 @@ import { FlightView3D } from './FlightView3D'
 import { WorkspaceHeader } from './WorkspaceHeader'
 import { HomeSourceChip } from './HomeSourceChip'
 import { MissionBoard } from './MissionBoard'
-import { useHome } from './homePosition'
+import { useHome, useHomeSector } from './homePosition'
 import {
   DEFAULT_STREET_OPTIONS,
   buildingsInArea,
@@ -31,6 +31,7 @@ import type { PlanMode, PlannerDraft, RoadClass } from '../../types/domain'
 import { samplePath, stopsAlongPath, waypointsFromPathData } from './missionPlan'
 import { isActive } from './missionSimulator'
 import { useMissionSimulation } from './useMissionSimulation'
+import { linkKindFor } from './useVehicleTelemetry'
 import {
   useGetMissionsQuery,
   useGetVehiclesQuery,
@@ -142,6 +143,7 @@ function MissionWorkspace({ vehicleId }: { vehicleId: string }) {
   const [draft, setDraft] = useState<PlannerDraft>(() => emptyDraft(profile))
   const [drawingZone, setDrawingZone] = useState(false)
   const simPathRef = useRef<SVGPathElement>(null)
+  useHomeSector(profile.domain)
   const home = useHome()
   const [ready, setReady] = useState(false)
   const [view3d, setView3d] = useState(false)
@@ -292,13 +294,10 @@ function MissionWorkspace({ vehicleId }: { vehicleId: string }) {
       profile.dwellParam && geometry === 'points' ? stopsAlongPath(simPath, draft.waypoints) : [],
     [profile.dwellParam, geometry, simPath, draft.waypoints],
   )
-  // Terrain checks sample the route every ~8 m.
+  // Terrain and bathymetry checks sample the route every ~8 m.
   const samples = useMemo(
-    () =>
-      profile.limits.maxGrade !== undefined && route
-        ? samplePath(route.path, 8 / METERS_PER_UNIT)
-        : NO_POINTS,
-    [profile.limits.maxGrade, route],
+    () => (!air && route ? samplePath(route.path, 8 / METERS_PER_UNIT) : NO_POINTS),
+    [air, route],
   )
   const editHandles = useMemo(
     () => [
@@ -353,6 +352,8 @@ function MissionWorkspace({ vehicleId }: { vehicleId: string }) {
     dwellSeconds,
     acceptMeters,
     enduranceMin: profile.limits.enduranceMin,
+    linkKind: linkKindFor(profile.domain, vehicle?.connection ?? ''),
+    bottomClearance: draft.params.bottomClearance,
   })
   // A plan that is under way is read-only until the vehicle is back and stopped.
   const locked = isActive(sim.stage)

@@ -6,6 +6,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--", "--port", "4180"],
       "port": 4180
+    },
+    {
+      "name": "forties-dev-alt",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--", "--port", "4183", "--strictPort"],
+      "port": 4183
     }
   ]
 }

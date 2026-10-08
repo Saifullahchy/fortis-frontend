@@ -108,6 +108,8 @@ export interface LivePlan {
   stopUnits: number[]
   dwellSeconds: number
   acceptMeters?: number
+  /** Underwater: minimum height above the seabed, metres. */
+  bottomClearance?: number
   /** Full planned distance, metres, so the live view can show it before the drive starts. */
   totalMeters: number
 }
@@ -148,10 +150,13 @@ export function livePlanFor(missions: Mission[], vehicleId: string): LivePlan | 
     mission,
     path,
     areas,
+    // Area surveys have no waypoints to count: the uploaded list is the sampled path.
     waypointCount: stopUnits.length
       ? stopUnits.length
-      : draft && pointMode
-        ? draft.waypoints.length
+      : draft
+        ? pointMode
+          ? draft.waypoints.length
+          : 0
         : mission.waypoints.length,
     uploaded: mission.status === 'ready',
     altitude: mission.plan.altitude,
@@ -160,6 +165,7 @@ export function livePlanFor(missions: Mission[], vehicleId: string): LivePlan | 
     stopUnits,
     dwellSeconds: mission.plan.dwellSeconds ?? 0,
     acceptMeters: mission.plan.acceptMeters,
+    bottomClearance: draft?.params.bottomClearance,
     totalMeters: (withPath(path, (_, total) => total) ?? 0) * METERS_PER_UNIT,
   }
 }

@@ -4,7 +4,7 @@ import { ModelBuilder, type ModelNode } from './modelBuilder'
  * Procedural vehicle models, one per class. Animated parts are exposed as named glTF nodes
  * (rotorN / discN on the quadcopter, wheelN on the rover) that the 3D view drives from telemetry.
  */
-export type ModelKind = 'quadcopter' | 'rover' | 'boat'
+export type ModelKind = 'quadcopter' | 'rover' | 'boat' | 'submersible'
 
 export interface VehicleModel {
   uri: string
@@ -14,8 +14,8 @@ export interface VehicleModel {
   discNodes: string[]
   /** Direction per spin node (+1 / -1). */
   directions: number[]
-  /** Rotation axis for the spin nodes: rotors turn about Y, wheels about Z. */
-  spinAxis: 'y' | 'z'
+  /** Rotation axis for the spin nodes: rotors turn about Y, wheels about Z, propellers about X. */
+  spinAxis: 'x' | 'y' | 'z'
   scale: number
   minimumPixelSize: number
 }
@@ -155,11 +155,63 @@ function boat(): VehicleModel {
   }
 }
 
+/**
+ * Survey-class AUV: a torpedo hull with a sail, tail fins and a single stern propeller, a
+ * forward-looking camera/light pod and the side-scan transducers along the flanks.
+ */
+function submersible(): VehicleModel {
+  const m = new ModelBuilder()
+  const hull = m.part([0.95, 0.62, 0.12, 1])
+  const dark = m.part([0.08, 0.1, 0.12, 1])
+  const accent = m.part([0.18, 0.88, 0.75, 1], { emissive: [0.1, 0.6, 0.5] })
+  const lamp = m.part([1, 0.97, 0.8, 1], { emissive: [0.9, 0.85, 0.5] })
+  const prop = m.part([0.7, 0.72, 0.74, 1])
+  // Hull: a long cylinder along X with stepped nose and tail cones.
+  m.cylinder(hull, 0, 0.3, 0, 0.22, 1.5, 20, 'x')
+  m.cylinder(hull, 0.88, 0.3, 0, 0.17, 0.3, 16, 'x')
+  m.cylinder(hull, 1.1, 0.3, 0, 0.1, 0.18, 12, 'x')
+  m.cylinder(hull, -0.88, 0.3, 0, 0.16, 0.3, 16, 'x')
+  m.cylinder(dark, -1.08, 0.3, 0, 0.08, 0.14, 10, 'x')
+  // Nose pod: camera window and lights.
+  m.cylinder(dark, 1.2, 0.3, 0, 0.06, 0.04, 10, 'x')
+  m.box(lamp, 1.12, 0.38, 0.09, 0.04, 0.04, 0.04)
+  m.box(lamp, 1.12, 0.38, -0.09, 0.04, 0.04, 0.04)
+  // Sail with the GPS/acoustic mast, and the side-scan transducer strips.
+  m.box(dark, 0.1, 0.58, 0, 0.4, 0.16, 0.12)
+  m.cylinder(accent, 0.1, 0.78, 0, 0.025, 0.24, 8)
+  m.box(accent, -0.1, 0.3, 0.225, 0.7, 0.05, 0.02)
+  m.box(accent, -0.1, 0.3, -0.225, 0.7, 0.05, 0.02)
+  // Tail fins: cruciform control surfaces.
+  m.box(dark, -0.8, 0.3, 0, 0.22, 0.56, 0.03)
+  m.box(dark, -0.8, 0.3, 0, 0.22, 0.03, 0.56)
+  // Stern propeller, built at the origin and placed by its node so the view can spin it.
+  m.cylinder(prop, 0, 0, 0, 0.025, 0.08, 8, 'x')
+  m.box(prop, 0, 0, 0, 0.03, 0.3, 0.06, 0)
+  m.box(prop, 0, 0, 0, 0.03, 0.06, 0.3, 0)
+  const nodes: ModelNode[] = [{ name: 'prop0', parts: [prop], translation: [-1.18, 0.3, 0] }]
+  return {
+    uri: m.build(nodes),
+    spinNodes: ['prop0'],
+    discNodes: [],
+    directions: [1],
+    spinAxis: 'x',
+    scale: 4,
+    minimumPixelSize: 40,
+  }
+}
+
 const cache = new Map<ModelKind, VehicleModel>()
 export function vehicleModel(kind: ModelKind): VehicleModel {
   let model = cache.get(kind)
   if (!model) {
-    model = kind === 'quadcopter' ? quadcopter() : kind === 'rover' ? rover() : boat()
+    model =
+      kind === 'quadcopter'
+        ? quadcopter()
+        : kind === 'rover'
+          ? rover()
+          : kind === 'submersible'
+            ? submersible()
+            : boat()
     cache.set(kind, model)
   }
   return model

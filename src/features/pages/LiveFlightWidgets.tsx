@@ -3,7 +3,6 @@ import { useEffect, useState } from 'react'
 import type { TelemetryFrame } from './useMissionSimulation'
 import { toGeo } from './MissionHud'
 import { METERS_PER_UNIT } from './missionGeometry'
-
 export type CameraMode = 'EO' | 'THERMAL' | 'MAP'
 const Z = 17
 const GRID = 5
@@ -35,6 +34,8 @@ export function LiveFeed({
   primary,
   onSwap,
   caption,
+  underwater = false,
+  slot2 = false,
 }: {
   frame: TelemetryFrame
   mode: CameraMode
@@ -44,6 +45,10 @@ export function LiveFeed({
   onSwap: () => void
   /** Readout for the camera mount, e.g. "GIMBAL -75°" or "MAST +20°". */
   caption?: string
+  /** Below the surface: the imagery is tinted and dimmed like a lit water column. */
+  underwater?: boolean
+  /** Second slot (right of the first tile) while another feed or the map holds the first. */
+  slot2?: boolean
 }) {
   const [elapsed, setElapsed] = useState(0)
   useEffect(() => {
@@ -61,10 +66,17 @@ export function LiveFeed({
   const px = (here.x - x0) * 256
   const py = (here.y - y0) * 256
   const rotate = -(frame.heading + gimbal.yaw)
-  const zoom = primary ? 3.2 : 2
+  const zoom = (primary ? 3.2 : 2) * (underwater ? 1.6 : 1)
+  const depth = frame.water?.depth ?? 0
+  const murk = underwater ? Math.min(0.6, 0.15 + depth / 60) : 0
+  const filter = underwater
+    ? `${FILTER[mode] === 'none' ? '' : FILTER[mode]} sepia(0.45) hue-rotate(140deg) saturate(1.7) brightness(${(1.15 - murk * 0.5).toFixed(2)}) contrast(1.1)`
+    : FILTER[mode]
   return (
-    <div className={`live-feed${primary ? ' primary' : ''}`}>
-      <div className="lf-view" style={{ filter: FILTER[mode] }}>
+    <div
+      className={`live-feed${primary ? ' primary' : ''}${underwater ? ' underwater' : ''}${slot2 ? ' slot-2' : ''}`}
+    >
+      <div className="lf-view" style={{ filter }}>
         <div className="lf-pivot" style={{ transform: `rotate(${rotate}deg) scale(${zoom})` }}>
           <div className="lf-tiles" style={{ transform: `translate(${-px}px, ${-py}px)` }}>
             {tiles.map(t => (
@@ -94,9 +106,13 @@ export function LiveFeed({
         <div className="lf-bottom">
           <span>{caption ?? `GIMBAL ${gimbal.pitch}°`}</span>
           <span>
-            {frame.ground
-              ? `GRADE ${frame.ground.grade.toFixed(0)}%`
-              : `ALT ${Math.round(frame.altitude)} m`}
+            {frame.water
+              ? underwater
+                ? `DEPTH ${frame.water.depth.toFixed(1)} m · ALT ${frame.water.altitudeAboveBottom.toFixed(1)} m`
+                : `UKC ${frame.water.seabed.toFixed(1)} m · ${frame.water.waterTemp.toFixed(0)} °C`
+              : frame.ground
+                ? `GRADE ${frame.ground.grade.toFixed(0)}%`
+                : `ALT ${Math.round(frame.altitude)} m`}
           </span>
           <span>{stamp(elapsed)}</span>
         </div>
@@ -197,15 +213,19 @@ const clampDeg = (v: number, lim: number) => Math.max(-lim, Math.min(lim, v))
 export function AttitudeIndicator({
   pitch,
   roll,
-  climb = 0,
+  climb,
+  theme = 'air',
 }: {
   pitch: number
   roll: number
-  /** Vertical speed, m/s, shown beside the attitude readout. */
+  /** Vertical speed, m/s, shown beside the attitude readout; omit to hide it. */
   climb?: number
+  /** Sea: the lower half is water, the symbol a hull, and the readout says heel and trim. */
+  theme?: 'air' | 'sea'
 }) {
   const p = clampDeg(pitch, 35)
   const r = clampDeg(roll, 90)
+  const sea = theme === 'sea'
   const ladder = [-30, -25, -20, -15, -10, -5, 5, 10, 15, 20, 25, 30]
   return (
     <div
@@ -226,11 +246,21 @@ export function AttitudeIndicator({
             <stop offset="0" stopColor="#8d5a26" />
             <stop offset="1" stopColor="#4e3012" />
           </linearGradient>
+          <linearGradient id="ai-sea" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stopColor="#1a7f9a" />
+            <stop offset="1" stopColor="#07303f" />
+          </linearGradient>
         </defs>
         <g clipPath="url(#ai-clip)">
           <g transform={`rotate(${-r}) translate(0 ${p * PITCH_PX})`}>
             <rect x="-200" y="-320" width="400" height="320" fill="url(#ai-sky)" />
-            <rect x="-200" y="0" width="400" height="320" fill="url(#ai-ground)" />
+            <rect
+              x="-200"
+              y="0"
+              width="400"
+              height="320"
+              fill={sea ? 'url(#ai-sea)' : 'url(#ai-ground)'}
+            />
             <line x1="-200" x2="200" y1="0" y2="0" stroke="#fff" strokeWidth="1.3" />
             {ladder.map(d => {
               const major = d % 10 === 0
@@ -277,21 +307,31 @@ export function AttitudeIndicator({
         <g transform={`rotate(${-r})`}>
           <path d="M0 -41 L-3.4 -35 L3.4 -35 Z" fill="#ff9f1a" />
         </g>
-        {/* Fixed aircraft symbol. */}
-        <g fill="none" stroke="#ffd21f" strokeWidth="2.2" strokeLinecap="round">
-          <path d="M-28 0 H-12" />
-          <path d="M12 0 H28" />
-          <path d="M-9 0 L-4.5 5 L0 0 L4.5 5 L9 0" />
-        </g>
+        {/* Fixed craft symbol: wings for an aircraft, a hull for a boat or submersible. */}
+        {sea ? (
+          <g fill="none" stroke="#ffd21f" strokeWidth="2.2" strokeLinecap="round">
+            <path d="M-28 0 H-14" />
+            <path d="M14 0 H28" />
+            <path d="M-11 -2 L-8 4 L8 4 L11 -2" />
+            <path d="M-3 -2 V-7 H3" />
+          </g>
+        ) : (
+          <g fill="none" stroke="#ffd21f" strokeWidth="2.2" strokeLinecap="round">
+            <path d="M-28 0 H-12" />
+            <path d="M12 0 H28" />
+            <path d="M-9 0 L-4.5 5 L0 0 L4.5 5 L9 0" />
+          </g>
+        )}
         <circle r="1.7" fill="#ffd21f" />
         <circle r="48" fill="none" stroke="#20292e" strokeWidth="4" />
         <circle r="50" fill="none" stroke="#4a5d69" strokeWidth="1" />
       </svg>
       <b>
-        P {pitch >= 0 ? '+' : ''}
-        {pitch.toFixed(0)}° · R {roll >= 0 ? '+' : ''}
-        {roll.toFixed(0)}° · {Math.abs(climb) < 0.05 ? '→' : climb > 0 ? '↑' : '↓'}
-        {Math.abs(climb).toFixed(1)} m/s
+        {sea ? 'TRIM' : 'P'} {pitch >= 0 ? '+' : ''}
+        {pitch.toFixed(0)}° · {sea ? 'HEEL' : 'R'} {roll >= 0 ? '+' : ''}
+        {roll.toFixed(0)}°
+        {climb !== undefined &&
+          ` · ${Math.abs(climb) < 0.05 ? '→' : climb > 0 ? '↑' : '↓'}${Math.abs(climb).toFixed(1)} m/s`}
       </b>
     </div>
   )

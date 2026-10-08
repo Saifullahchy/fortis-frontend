@@ -1,4 +1,5 @@
 import { useMissionSimulation, type TelemetrySource } from './useMissionSimulation'
+import type { LinkKind } from './missionSimulator'
 import { METERS_PER_UNIT } from './missionGeometry'
 import type { LivePlan } from './missionPlan'
 import type { VehicleProfile } from '../vehicles/vehicleProfile'
@@ -19,6 +20,7 @@ export function useVehicleTelemetry(
   plan: LivePlan | null,
   batteryStart: number,
   ready: boolean,
+  connection = '',
 ): VehicleTelemetry {
   const sim = useMissionSimulation({
     vehicleId,
@@ -35,6 +37,16 @@ export function useVehicleTelemetry(
     dwellSeconds: plan?.dwellSeconds ?? 0,
     acceptMeters: plan?.acceptMeters,
     enduranceMin: profile.limits.enduranceMin,
+    linkKind: linkKindFor(profile.domain, connection),
+    bottomClearance: plan?.bottomClearance,
   })
   return { ...sim, source: 'simulation' }
+}
+
+/** Underwater craft report over a tether or an acoustic modem; everything else is radio. */
+export function linkKindFor(domain: string, connection: string): LinkKind {
+  const c = connection.toLowerCase()
+  if (c.includes('tether')) return 'tether'
+  if (c.includes('acoustic') || domain === 'underwater') return 'acoustic'
+  return 'rf'
 }

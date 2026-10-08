@@ -21,6 +21,33 @@ export interface GroundTelemetry {
   driveMode: 'auto' | 'manual'
 }
 
+/** Water extension of the frame: present for surface and underwater vehicles. */
+export interface WaterTelemetry {
+  /** Course over ground, degrees: where the hull is actually going (heading plus crab). */
+  course: number
+  /** Current: the direction it flows toward (set, degrees) and its speed (drift, m/s). */
+  set: number
+  drift: number
+  /** Depth below the surface, metres (0 on the surface). */
+  depth: number
+  /** Water depth at this position, metres. */
+  seabed: number
+  /** Height above the seabed, metres. */
+  altitudeAboveBottom: number
+  /** Navigation error radius, metres: grows on dead reckoning underwater, resets with a fix. */
+  positionError: number
+  /** Seconds since the last status packet; an acoustic link only reports every few seconds. */
+  linkAge: number
+  /** Seconds between status packets on this link (0 for a continuous link). */
+  linkInterval: number
+  /** True while holding position at a stop against the current. */
+  stationKeeping: boolean
+  leak: boolean
+  /** Hull internal pressure, kPa; a sealed hull holds ~101 kPa, a rise means a seal is going. */
+  internalPressure: number
+  waterTemp: number
+}
+
 export interface TelemetryFrame {
   position: Point
   heading: number
@@ -43,7 +70,10 @@ export interface TelemetryFrame {
   remainingSeconds: number
   waypoint: { index: number; total: number }
   ground?: GroundTelemetry
+  water?: WaterTelemetry
 }
+
+export type LinkKind = 'rf' | 'acoustic' | 'tether'
 
 export interface SimParams {
   domain: VehicleDomain
@@ -62,6 +92,10 @@ export interface SimParams {
   acceptMeters?: number
   /** Full-battery runtime, minutes. */
   enduranceMin?: number
+  /** Telemetry link: an acoustic link reports in sparse packets, a tether or RF continuously. */
+  linkKind?: LinkKind
+  /** Underwater: minimum height to keep above the seabed, metres (terrain following). */
+  bottomClearance?: number
 }
 
 export interface DriveInput {
@@ -110,6 +144,32 @@ const GROUND = {
   lookaheadMeters: 9,
 }
 
+/**
+ * Water motion model. A hull is pushed sideways by the current: under way it crabs into it to
+ * hold the track; at a stop it drifts inside the loiter radius and drives back when it leaves it
+ * (ArduPilot's boat Loiter). Underwater, navigation is dead reckoning: the position error grows
+ * with distance run and only a surface fix or an acoustic (USBL) fix pulls it back.
+ */
+const WATER = {
+  surfaceDrift: 0.45,
+  underwaterDrift: 0.22,
+  /** Residual cross-track the autopilot leaves per m/s of beam current, metres. */
+  crossTrackPerDrift: 5,
+  loiterRadius: 4,
+  loiterGain: 0.5,
+  /** Dead-reckoning error growth, fraction of distance run. */
+  drError: 0.02,
+  surfaceFixError: 1.5,
+  acousticInterval: 8,
+  /** USBL fix error as a fraction of slant range from the base transponder. */
+  usblError: 0.015,
+  diveSlope: 4,
+}
+
+const isWater = (d: VehicleDomain) => d === 'surface' || d === 'underwater'
+/** Seconds between status packets on an acoustic link, for standby readouts. */
+export const ACOUSTIC_STATUS_INTERVAL = WATER.acousticInterval
+
 /** Mission stage names that mean the vehicle is under way (plan locked, commands live). */
 export const isActive = (stage: MissionStage) => ACTIVE.includes(stage)
 
@@ -124,6 +184,36 @@ export function terrainHeight(p: Point, metersPerUnit: number) {
     0.5 * Math.sin((x - 2 * y) / 19)
   )
 }
+
+/** Synthetic bathymetry around the base, metres below the surface; shelves away from home. */
+export function seabedDepth(p: Point, metersPerUnit: number) {
+  const dx = (p.x - HOME.x) * metersPerUnit
+  const dy = (p.y - HOME.y) * metersPerUnit
+  const away = Math.hypot(dx, dy)
+  return Math.max(
+    1.5,
+    5 +
+      away * 0.045 +
+      3 * Math.sin(dx / 70 + 1) +
+      2.2 * Math.cos(dy / 55) +
+      1.1 * Math.sin((dx + dy) / 33),
+  )
+}
+
+const EMPTY_WATER = () => ({
+  /** Cross-track offset from the plan, metres, right-of-track positive. */
+  crossTrack: 0,
+  /** Drift away from a stop while station keeping, metres (screen x/y sense). */
+  hold: { x: 0, y: 0 },
+  holdSpeed: 0,
+  holdHeading: null as number | null,
+  depth: 0,
+  lastDepth: 0,
+  lastAt: 0,
+  positionError: 1.5,
+  linkAge: 0,
+  pitch: 0,
+})
 
 const EMPTY_ATTITUDE = () => ({
   pitch: 0,
@@ -160,6 +250,7 @@ class MissionSimulator {
   /** Unrounded altitude from the last sample, for a clean vertical-speed derivative. */
   private altitudeExact = 0
   private attitude = EMPTY_ATTITUDE()
+  private water = EMPTY_WATER()
   private transit: [number, number] = [0, 0]
   /** Distance covered on earlier legs (e.g. before an RTL re-route), in path units. */
   private coveredBefore = 0
@@ -209,9 +300,12 @@ class MissionSimulator {
     this.startLoop()
   }
 
+  /** Hold: hover (air), pause (ground) or keep station against the current (water). */
   hold = () => {
     if (this.state.stage !== 'active' && this.state.stage !== 'returning') return
-    this.stopLoop()
+    const p = this.params
+    // A hull keeps ticking while it holds: the current still moves it and it drives back.
+    if (!p || !isWater(p.domain)) this.stopLoop()
     this.speed = 0
     this.set({ ...this.state, stage: 'holding', playing: false })
   }
@@ -249,7 +343,7 @@ class MissionSimulator {
       ...this.state,
       stage: 'complete',
       playing: false,
-      frame: { ...frame, altitude: 0, groundSpeed: 0, phase: 'complete' },
+      frame: this.surfaced({ ...frame, altitude: 0, groundSpeed: 0, phase: 'complete' }),
     })
   }
 
@@ -262,7 +356,9 @@ class MissionSimulator {
       ...this.state,
       stage: 'aborted',
       playing: false,
-      frame: frame ? { ...frame, altitude: 0, groundSpeed: 0, phase: 'complete' } : null,
+      frame: frame
+        ? this.surfaced({ ...frame, altitude: 0, groundSpeed: 0, phase: 'complete' })
+        : null,
     })
   }
 
@@ -369,6 +465,7 @@ class MissionSimulator {
     this.rejoin = null
     this.input = { throttle: 0, steer: 0 }
     this.attitude = EMPTY_ATTITUDE()
+    this.water = EMPTY_WATER()
   }
 
   private mountPath(d: string) {
@@ -466,6 +563,9 @@ class MissionSimulator {
       ? Math.min(p.waypointCount, this.nextStop)
       : Math.min(p.waypointCount, Math.ceil((at / total) * p.waypointCount))
     const distance = before + at * p.metersPerUnit
+    const water = isWater(p.domain)
+    const seabed = water ? seabedDepth(pt, p.metersPerUnit) : 0
+    const stream = water ? this.current() : { set: 0, drift: 0 }
     return {
       position: { x: pt.x, y: pt.y },
       heading,
@@ -495,7 +595,207 @@ class MissionSimulator {
               odometer: distance,
               driveMode: 'auto' as const,
             },
+            ...(water
+              ? {
+                  water: {
+                    course: heading,
+                    set: Math.round(stream.set),
+                    drift: Math.round(stream.drift * 100) / 100,
+                    depth: Math.round(this.water.depth * 10) / 10,
+                    seabed: Math.round(seabed * 10) / 10,
+                    altitudeAboveBottom: Math.round((seabed - this.water.depth) * 10) / 10,
+                    positionError: Math.round(this.water.positionError * 10) / 10,
+                    linkAge: 0,
+                    linkInterval: this.linkKind() === 'acoustic' ? WATER.acousticInterval : 0,
+                    stationKeeping: false,
+                    leak: false,
+                    internalPressure: 101.3,
+                    waterTemp: 24.5,
+                  },
+                }
+              : {}),
           }),
+    }
+  }
+
+  /** A moored or surfaced craft sits at the surface with a fresh fix. */
+  private surfaced(frame: TelemetryFrame): TelemetryFrame {
+    if (!frame.water) return frame
+    this.water.depth = 0
+    this.water.positionError = WATER.surfaceFixError
+    return {
+      ...frame,
+      verticalSpeed: 0,
+      water: {
+        ...frame.water,
+        depth: 0,
+        altitudeAboveBottom: frame.water.seabed,
+        positionError: WATER.surfaceFixError,
+        stationKeeping: false,
+      },
+    }
+  }
+
+  private linkKind(): LinkKind {
+    const p = this.params!
+    return p.linkKind ?? (p.domain === 'underwater' ? 'acoustic' : 'rf')
+  }
+
+  /** The current at this moment: a steady set that wanders slowly, like a tidal stream. */
+  private current() {
+    const p = this.params!
+    const t = this.elapsedSeconds
+    const base = p.domain === 'underwater' ? WATER.underwaterDrift : WATER.surfaceDrift
+    return {
+      set: (215 + 10 * Math.sin(t / 90) + 360) % 360,
+      drift: Math.max(0.05, base + base * 0.35 * Math.sin(t / 60 + 1)),
+    }
+  }
+
+  /**
+   * Water behaviour layered on the sampled frame: crab and residual cross-track from the
+   * current, station keeping at stops, the dive profile with terrain following, dead-reckoning
+   * error and the sparse acoustic link. Real telemetry replaces all of it with the autopilot's
+   * GLOBAL_POSITION_INT / VFR_HUD / SCALED_PRESSURE2 stream.
+   */
+  private integrateWater(frame: TelemetryFrame, dt: number, manual = false) {
+    const p = this.params!
+    const w = this.water
+    const mpu = p.metersPerUnit
+    const under = p.domain === 'underwater'
+    const { set, drift } = this.current()
+    const track = frame.heading
+    const rel = ((set - track) * Math.PI) / 180
+    /** Beam component of the current, right-of-track positive, and the head component. */
+    const beam = drift * Math.sin(rel)
+    const speed = frame.groundSpeed
+    const stopped = !manual && (this.dwellLeft > 0 || speed < 0.05) && isActive(this.state.stage)
+    const k = 1 - Math.exp(-dt * 0.8)
+    let heading = track
+    let course = track
+    let stationKeeping = false
+    let gs = speed
+    if (stopped && frame.phase !== 'complete') {
+      // Station keeping: drift freely inside the loiter radius, drive back outside it.
+      stationKeeping = true
+      const h = w.hold
+      const sx = Math.sin((set * Math.PI) / 180)
+      const sy = -Math.cos((set * Math.PI) / 180)
+      h.x += sx * drift * dt
+      h.y += sy * drift * dt
+      const out = Math.hypot(h.x, h.y) - WATER.loiterRadius
+      if (out > 0) {
+        const back = Math.min(p.cruiseSpeed, out * WATER.loiterGain + 0.2)
+        const n = Math.hypot(h.x, h.y) || 1
+        h.x -= (h.x / n) * back * dt
+        h.y -= (h.y / n) * back * dt
+        w.holdSpeed += (back - w.holdSpeed) * k
+        // Bow toward the stop point (LOIT_TYPE 1): a bow-mounted sensor keeps looking at it.
+        w.holdHeading = (Math.atan2(-h.x, h.y) * 180) / Math.PI
+      } else {
+        w.holdSpeed += (0 - w.holdSpeed) * k
+      }
+      if (w.holdHeading === null) w.holdHeading = (set + 180) % 360
+      heading = (w.holdHeading + 360) % 360
+      course = heading
+      gs = Math.round(w.holdSpeed * 10) / 10
+      w.crossTrack += (0 - w.crossTrack) * k
+    } else {
+      w.hold = { x: 0, y: 0 }
+      w.holdSpeed = 0
+      w.holdHeading = null
+      // Under way: crab into the beam current to hold the track, leaving a little cross-track.
+      const crab =
+        speed > 0.2 ? (Math.asin(Math.max(-0.95, Math.min(0.95, beam / speed))) * 180) / Math.PI : 0
+      heading = (track - crab + 360) % 360
+      const targetXt = speed > 0.2 ? beam * WATER.crossTrackPerDrift * 0.4 : 0
+      w.crossTrack += (targetXt - w.crossTrack) * k
+      const along = speed || 0.001
+      course =
+        speed > 0.2
+          ? (track + (Math.atan2(w.crossTrack * 0.05, along) * 180) / Math.PI + 360) % 360
+          : track
+    }
+    // Apply the offsets to the reported position (screen units, y down).
+    const ht = (track * Math.PI) / 180
+    const right = { x: Math.cos(ht), y: Math.sin(ht) }
+    const offX = (right.x * w.crossTrack + w.hold.x) / mpu
+    const offY = (right.y * w.crossTrack + w.hold.y) / mpu
+    frame.position = { x: frame.position.x + offX, y: frame.position.y + offY }
+    frame.heading = Math.round(heading * 10) / 10
+    if (!manual) frame.groundSpeed = gs
+    const seabed = seabedDepth(frame.position, mpu)
+    // Depth: dive and surface over a glide slope at the ends of the track, hold depth between,
+    // and lift over shallows to keep the bottom clearance (SurfTrak-style terrain following).
+    let depth = 0
+    if (under) {
+      const planned = p.cruiseAltitude
+      const clearance = Math.max(1, p.bottomClearance ?? 3)
+      const diveUnits = Math.max(60, planned * WATER.diveSlope) / mpu
+      const total = this.total()
+      const at = this.traveled
+      const up = this.state.stage === 'returning' ? 1 : Math.min(at / diveUnits, 1)
+      const down = total > 0 ? Math.min((total - at) / diveUnits, 1) : 0
+      const active = isActive(this.state.stage) && frame.phase !== 'complete'
+      const target = active
+        ? Math.max(0, Math.min(planned * Math.min(up, down), seabed - clearance))
+        : 0
+      const kd = 1 - Math.exp(-dt * 1.2)
+      w.depth += (target - w.depth) * kd
+      depth = w.depth
+    }
+    const dDepth = dt > 0 ? (depth - w.lastDepth) / dt : 0
+    w.lastDepth = depth
+    // Navigation: dead reckoning underwater grows the error with distance; a surface GPS fix or
+    // an acoustic USBL fix (one per status packet) pulls it back.
+    const ds = Math.abs(speed) * dt
+    const homeMeters = Math.hypot(frame.position.x - HOME.x, frame.position.y - HOME.y) * mpu
+    const link = this.linkKind()
+    const interval = link === 'acoustic' ? WATER.acousticInterval : 0
+    let packet = false
+    if (interval) {
+      w.linkAge += dt
+      if (w.linkAge >= interval) {
+        w.linkAge = 0
+        packet = true
+      }
+    } else w.linkAge = 0
+    if (depth > 0.5) {
+      w.positionError += ds * WATER.drError + dt * 0.01
+      if (packet) w.positionError = Math.min(w.positionError, 3 + homeMeters * WATER.usblError)
+    } else {
+      w.positionError += (WATER.surfaceFixError - w.positionError) * (1 - Math.exp(-dt * 1.5))
+    }
+    if (link === 'acoustic') {
+      frame.link = Math.max(15, Math.round(88 - Math.min(60, homeMeters / 18) - depth * 0.15))
+      frame.satellites = depth > 0.5 ? 0 : frame.satellites
+    } else if (link === 'tether') {
+      frame.link = 99
+      frame.satellites = depth > 0.5 ? 0 : frame.satellites
+    }
+    frame.verticalSpeed = Math.round(-dDepth * 10) / 10
+    if (frame.ground) {
+      frame.ground.crossTrack = manual
+        ? frame.ground.crossTrack
+        : Math.round(Math.abs(w.crossTrack) * 10) / 10
+      frame.ground.elevation = -Math.round(seabed * 10) / 10
+      frame.ground.grade = 0
+    }
+    frame.water = {
+      course: Math.round(course * 10) / 10,
+      set: Math.round(set),
+      drift: Math.round(drift * 100) / 100,
+      depth: Math.round(depth * 10) / 10,
+      seabed: Math.round(seabed * 10) / 10,
+      altitudeAboveBottom: Math.round(Math.max(0, seabed - depth) * 10) / 10,
+      positionError: Math.round(w.positionError * 10) / 10,
+      linkAge: Math.round(w.linkAge * 10) / 10,
+      linkInterval: interval,
+      stationKeeping,
+      leak: false,
+      internalPressure:
+        Math.round((101.3 + depth * 0.004 + 0.15 * Math.sin(this.elapsedSeconds / 11)) * 10) / 10,
+      waterTemp: Math.round((24.5 - depth * 0.12) * 10) / 10,
     }
   }
 
@@ -590,6 +890,14 @@ class MissionSimulator {
       const t = this.elapsedSeconds
       targetPitch = 1.2 * Math.sin(t / 1.7)
       targetRoll = 1.6 * Math.sin(t / 2.3 + 1) + Math.max(-8, Math.min(8, -turnRate * 0.12))
+    } else if (p.domain === 'underwater') {
+      // Nose follows the dive: down while descending, up while surfacing; swell fades with depth.
+      const t = this.elapsedSeconds
+      const depth = frame.water?.depth ?? 0
+      const swell = Math.max(0, 1 - depth / 3)
+      const vs = frame.verticalSpeed
+      targetPitch = Math.max(-25, Math.min(25, vs * 9)) + swell * 1.2 * Math.sin(t / 1.7)
+      targetRoll = swell * 1.6 * Math.sin(t / 2.3 + 1) + Math.max(-6, Math.min(6, -turnRate * 0.08))
     } else {
       const along = (at(fwd, probe) - at(fwd, -probe)) / 4
       const across = (at(side, probe) - at(side, -probe)) / 4
@@ -601,8 +909,8 @@ class MissionSimulator {
     a.roll += (targetRoll - a.roll) * k
     frame.pitch = Math.round(a.pitch * 10) / 10
     frame.roll = Math.round(a.roll * 10) / 10
-    frame.verticalSpeed = 0
-    if (frame.ground) frame.ground.grade = Math.round(grade * 10) / 10
+    if (p.domain !== 'underwater') frame.verticalSpeed = 0
+    if (frame.ground && !isWater(p.domain)) frame.ground.grade = Math.round(grade * 10) / 10
   }
 
   /** The stop the vehicle is heading for on the plan; none while returning or rejoining. */
@@ -706,6 +1014,7 @@ class MissionSimulator {
         odometer: distance,
         driveMode: 'manual',
       },
+      ...(last.water ? { water: last.water } : {}),
     }
   }
 
@@ -742,9 +1051,13 @@ class MissionSimulator {
       let frame: TelemetryFrame | null
       if (this.state.stage === 'manual') {
         frame = this.advanceManual(dt)
-        if (frame) this.integrateGroundAttitude(frame, dt)
+        if (frame) {
+          if (isWater(p.domain)) this.integrateWater(frame, dt, true)
+          this.integrateGroundAttitude(frame, dt)
+        }
       } else {
-        if (p.domain === 'air') {
+        if (this.state.stage === 'holding') this.speed = 0
+        else if (p.domain === 'air') {
           this.speed = p.cruiseSpeed
           this.traveled += (p.cruiseSpeed * dt) / p.metersPerUnit
         } else this.advanceGround(dt)
@@ -753,6 +1066,7 @@ class MissionSimulator {
         }
         frame = this.sample(this.traveled, this.state.stage)
         if (frame) {
+          if (isWater(p.domain)) this.integrateWater(frame, dt)
           if (p.domain === 'air') this.integrateAirAttitude(frame, dt)
           else this.integrateGroundAttitude(frame, dt)
         }

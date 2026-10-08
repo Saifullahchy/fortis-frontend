@@ -1,8 +1,11 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { setMissionOrigin } from './MissionHud'
 import { HOME, METERS_PER_UNIT } from './missionGeometry'
+import type { VehicleDomain } from '../../types/domain'
 
 export type HomeSource = 'default' | 'device' | 'vehicle'
+/** Which demo sector the grid sits in: inland for air and ground, the coast for water craft. */
+export type HomeSector = 'land' | 'coastal'
 
 export interface HomePosition {
   lat: number
@@ -13,15 +16,53 @@ export interface HomePosition {
   updatedAt: number
   /** Why the device fix is unavailable, when it is. */
   error?: string
+  sector?: HomeSector
 }
 
 /** Fallback when no fix is available: the demo sector. */
 const DEFAULT_HOME: HomePosition = { lat: 23.8, lng: 90.3585, source: 'default', updatedAt: 0 }
+/**
+ * Water craft launch from the east beach of Saint Martin's Island, just south of the jetty:
+ * open sea to the north and east where the planning grid lies, moored boats and the jetty
+ * within sonar range. The device fix is ignored for them (an operator inland is not where the
+ * boat is); the vehicle's own GPS still wins once it reports.
+ */
+const COASTAL_HOME: HomePosition = {
+  lat: 20.6298,
+  lng: 92.3277,
+  source: 'default',
+  sector: 'coastal',
+  updatedAt: 0,
+}
 /** Ignore device jitter smaller than this so the map does not re-frame on every fix. */
 const MIN_MOVE_M = 12
 
 let current: HomePosition = DEFAULT_HOME
+let sector: HomeSector = 'land'
+let snapshot: HomePosition = DEFAULT_HOME
 const listeners = new Set<() => void>()
+
+const resolve = (): HomePosition =>
+  sector === 'coastal' && current.source !== 'vehicle' ? COASTAL_HOME : current
+
+/** Place the origin so that toGeo(HOME) lands exactly on the home fix, then wake subscribers. */
+function apply(notify = true) {
+  const h = resolve()
+  const lat = h.lat + ((HOME.y - 350) * METERS_PER_UNIT) / 111320
+  const lng =
+    h.lng - ((HOME.x - 500) * METERS_PER_UNIT) / (111320 * Math.cos((h.lat * Math.PI) / 180))
+  setMissionOrigin(lat, lng)
+  snapshot = h
+  if (notify) listeners.forEach(fn => fn())
+}
+
+/** Selects the demo sector for the vehicle class being worked on (no-op once a real fix is in). */
+export function setHomeSector(domain: VehicleDomain | undefined, notify = true) {
+  const next: HomeSector = domain === 'surface' || domain === 'underwater' ? 'coastal' : 'land'
+  if (next === sector) return
+  sector = next
+  apply(notify)
+}
 
 const metres = (a: HomePosition, b: HomePosition) => {
   const dLat = (b.lat - a.lat) * 111320
@@ -40,17 +81,22 @@ export function setHome(next: Omit<HomePosition, 'updatedAt'>) {
   if (sameSource && metres(current, candidate) < MIN_MOVE_M && !candidate.error) {
     // Keep the grid still, but let the freshness/accuracy readout tick over.
     current = { ...current, accuracy: candidate.accuracy, updatedAt: candidate.updatedAt }
-    listeners.forEach(fn => fn())
+    apply()
     return
   }
   current = candidate
-  // Place the origin so that toGeo(HOME) lands exactly on the home fix.
-  const lat = candidate.lat + ((HOME.y - 350) * METERS_PER_UNIT) / 111320
-  const lng =
-    candidate.lng -
-    ((HOME.x - 500) * METERS_PER_UNIT) / (111320 * Math.cos((candidate.lat * Math.PI) / 180))
-  setMissionOrigin(lat, lng)
-  listeners.forEach(fn => fn())
+  apply()
+}
+
+/** Binds a workspace to its class's sector before the first render that reads the grid. */
+export function useHomeSector(domain: VehicleDomain | undefined) {
+  // Move the grid before this render reads it (silently: no setState in other components
+  // mid-render), then wake every subscriber once the tree has committed.
+  setHomeSector(domain, false)
+  useEffect(() => {
+    setHomeSector(domain)
+    listeners.forEach(fn => fn())
+  }, [domain])
 }
 
 export function useHome(): HomePosition & { key: string } {
@@ -59,7 +105,7 @@ export function useHome(): HomePosition & { key: string } {
       listeners.add(fn)
       return () => listeners.delete(fn)
     },
-    () => current,
+    () => snapshot,
   )
   return { ...home, key: `${home.lat.toFixed(5)},${home.lng.toFixed(5)}` }
 }

@@ -25,7 +25,7 @@ export function VehicleDashboard() {
   if (!v) return <div className="empty">Vehicle not found.</div>
   const profile = profileFor(v.type)
   if (profile.live) return <OperationsWorkspace vehicle={v} />
-  // Classes without a live workspace yet (underwater) keep the summary dashboard.
+  // Every class has a live workspace now; the summary dashboard stays as the fallback.
   const controls = [
     [Gauge, profile.commands.launch],
     [Octagon, profile.commands.hold],

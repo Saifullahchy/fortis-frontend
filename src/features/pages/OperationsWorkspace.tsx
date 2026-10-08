@@ -1,14 +1,17 @@
 import {
   Activity,
   AlertTriangle,
+  Anchor,
   Battery,
   Camera,
   CircleStop,
+  Compass as CompassIcon,
   Crosshair,
   Gamepad2,
   Gauge,
   History,
   Home,
+  LocateFixed,
   Maximize2,
   Mountain,
   Octagon,
@@ -22,6 +25,7 @@ import {
   Settings2,
   ShieldCheck,
   Target,
+  Waves,
 } from 'lucide-react'
 import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
@@ -39,13 +43,20 @@ import {
   TeleopPad,
   type CameraMode,
 } from './LiveFlightWidgets'
+import { DepthGauge, NavRose } from './MarineWidgets'
+import { SonarFeed } from './SonarView'
 import { WorkspaceHeader } from './WorkspaceHeader'
-import { useHome } from './homePosition'
+import { useHome, useHomeSector } from './homePosition'
 import { useStreetNetwork, type ViewRect } from '../map/streetNetwork'
 import { HOME, METERS_PER_UNIT } from './missionGeometry'
 import { livePlanFor } from './missionPlan'
-import { isActive, type TelemetryFrame } from './missionSimulator'
-import { useVehicleTelemetry } from './useVehicleTelemetry'
+import {
+  ACOUSTIC_STATUS_INTERVAL,
+  isActive,
+  seabedDepth,
+  type TelemetryFrame,
+} from './missionSimulator'
+import { linkKindFor, useVehicleTelemetry } from './useVehicleTelemetry'
 import { profileFor, stageTone, type StripIcon } from '../vehicles/vehicleProfile'
 
 const NO_AREAS: never[] = []
@@ -64,6 +75,11 @@ const STRIP_ICONS: Record<StripIcon, ReactNode> = {
   grade: <Mountain />,
   odometer: <RouteIcon />,
   elevation: <Mountain />,
+  depth: <Waves />,
+  course: <CompassIcon />,
+  link: <Radio />,
+  fix: <LocateFixed />,
+  pressure: <Gauge />,
 }
 
 /**
@@ -73,13 +89,22 @@ const STRIP_ICONS: Record<StripIcon, ReactNode> = {
 export function OperationsWorkspace({ vehicle }: { vehicle: Vehicle }) {
   const profile = profileFor(vehicle.type)
   const air = profile.domain === 'air'
+  const under = profile.domain === 'underwater'
+  const water = under || profile.domain === 'surface'
+  useHomeSector(profile.domain)
   const [maxAltitude, setMaxAltitude] = useState(profile.limits.maxAltitude ?? 0)
   const [maxSpeed, setMaxSpeed] = useState(profile.limits.maxSpeed)
   const [mode, setMode] = useState<CameraMode>('EO')
   const [gimbal, setGimbal] = useState(air ? { pitch: -75, yaw: 0 } : { pitch: -14, yaw: 0 })
   const [view3d, setView3d] = useState(true)
-  /** Swap the stage: map with feed picture-in-picture, or feed full with the map as the PiP. */
-  const [feedPrimary, setFeedPrimary] = useState(false)
+  /** What fills the stage: the map (feeds as picture-in-picture), the camera, or the sonar. */
+  const [primary, setPrimary] = useState<'map' | 'camera' | 'sonar'>('map')
+  const feedPrimary = primary !== 'map'
+  const sonar = profile.payload === 'sonar'
+  /** Dive lights, percent (underwater only). */
+  const [lights, setLights] = useState(60)
+  /** Sonar display gain, percent (water craft). */
+  const [sonarGain, setSonarGain] = useState(60)
   const pathRef = useRef<SVGPathElement>(null)
   const home = useHome()
   const [view, setView] = useState<ViewRect | null>(null)
@@ -100,6 +125,7 @@ export function OperationsWorkspace({ vehicle }: { vehicle: Vehicle }) {
     plan,
     vehicle.battery,
     missionsLoaded && !missionsFetching,
+    vehicle.connection,
   )
   const standby = useMemo<TelemetryFrame>(
     () => ({
@@ -125,9 +151,40 @@ export function OperationsWorkspace({ vehicle }: { vehicle: Vehicle }) {
         ? {}
         : {
             ground: { grade: 0, elevation: 0, crossTrack: 0, odometer: 0, driveMode: 'auto' },
+            ...(water
+              ? {
+                  water: {
+                    course: vehicle.heading,
+                    set: 0,
+                    drift: 0,
+                    depth: 0,
+                    seabed: Math.round(seabedDepth(HOME, METERS_PER_UNIT) * 10) / 10,
+                    altitudeAboveBottom: Math.round(seabedDepth(HOME, METERS_PER_UNIT) * 10) / 10,
+                    positionError: 1.5,
+                    linkAge: 0,
+                    linkInterval:
+                      linkKindFor(profile.domain, vehicle.connection) === 'acoustic'
+                        ? ACOUSTIC_STATUS_INTERVAL
+                        : 0,
+                    stationKeeping: false,
+                    leak: false,
+                    internalPressure: 101.3,
+                    waterTemp: 24.5,
+                  },
+                }
+              : {}),
           }),
     }),
-    [vehicle.heading, vehicle.battery, vehicle.link, plan, air],
+    [
+      vehicle.heading,
+      vehicle.battery,
+      vehicle.link,
+      vehicle.connection,
+      plan,
+      air,
+      water,
+      profile.domain,
+    ],
   )
   const frame = telemetry.frame ?? standby
   const stage = plan ? telemetry.stage : 'standby'
@@ -157,7 +214,9 @@ export function OperationsWorkspace({ vehicle }: { vehicle: Vehicle }) {
             ? 'Quadcopter'
             : profile.model === 'rover'
               ? 'Rover'
-              : 'Vessel')
+              : profile.model === 'submersible'
+                ? 'Submersible'
+                : 'Vessel')
         }`,
         plan
           ? `${plan.mission.name} · ${plan.mission.status === 'ready' ? 'UPLOADED' : 'DRAFT'}`
@@ -224,6 +283,7 @@ export function OperationsWorkspace({ vehicle }: { vehicle: Vehicle }) {
             network={profile.streetRouting ? streets.network : null}
             basemap={profile.streetRouting ? 'tactical' : 'satellite'}
             onViewChange={profile.streetRouting ? setView : undefined}
+            sonarMosaic={sonar ? { key: vehicle.id, gain: sonarGain } : undefined}
             fitRoute
             motion={
               !plan || stage === 'standby' || stage === 'complete' || stage === 'aborted'
@@ -241,7 +301,7 @@ export function OperationsWorkspace({ vehicle }: { vehicle: Vehicle }) {
               <span>
                 <i /> 3D MAP · {view3d ? 'TACTICAL' : 'TOP-DOWN'}
               </span>
-              <button onClick={() => setFeedPrimary(false)} title="Back to map view">
+              <button onClick={() => setPrimary('map')} title="Back to map view">
                 <Maximize2 />
               </button>
             </div>
@@ -284,8 +344,14 @@ export function OperationsWorkspace({ vehicle }: { vehicle: Vehicle }) {
                   </b>
                 </span>
               )}
+              {frame.water?.stationKeeping && (
+                <span>
+                  <label>STATION</label>
+                  <b>HOLDING</b>
+                </span>
+              )}
               <span>
-                <label>{air ? 'FLOWN' : 'COVERED'}</label>
+                <label>{air ? 'FLOWN' : water ? 'LOGGED' : 'COVERED'}</label>
                 <b>{(frame.distance / 1000).toFixed(2)} km</b>
               </span>
               <span>
@@ -309,18 +375,43 @@ export function OperationsWorkspace({ vehicle }: { vehicle: Vehicle }) {
             frame={frame}
             mode={mode}
             gimbal={gimbal}
-            primary={feedPrimary}
-            onSwap={() => setFeedPrimary(p => !p)}
+            primary={primary === 'camera'}
+            slot2={primary === 'sonar'}
+            onSwap={() => setPrimary(p => (p === 'camera' ? 'map' : 'camera'))}
             caption={
-              air ? `GIMBAL ${gimbal.pitch}°` : `MAST ${gimbal.yaw >= 0 ? '+' : ''}${gimbal.yaw}°`
+              air
+                ? `GIMBAL ${gimbal.pitch}°`
+                : under
+                  ? `TILT ${gimbal.pitch}° · LIGHTS ${lights}%`
+                  : `MAST ${gimbal.yaw >= 0 ? '+' : ''}${gimbal.yaw}°`
             }
+            underwater={under}
           />
+          {sonar && (
+            <SonarFeed
+              frame={frame}
+              underwater={under}
+              gain={sonarGain}
+              primary={primary === 'sonar'}
+              slot2={primary !== 'sonar'}
+              onSwap={() => setPrimary(p => (p === 'sonar' ? 'map' : 'sonar'))}
+            />
+          )}
           <div className="instruments">
+            {under && frame.water && (
+              <DepthGauge
+                depth={frame.water.depth}
+                seabed={frame.water.seabed}
+                maxDepth={maxAltitude}
+                verticalSpeed={frame.verticalSpeed}
+              />
+            )}
             {profile.instruments === 'attitude' ? (
               <AttitudeIndicator
                 pitch={frame.pitch}
                 roll={frame.roll}
-                climb={frame.verticalSpeed}
+                climb={water && !under ? undefined : frame.verticalSpeed}
+                theme={water ? 'sea' : 'air'}
               />
             ) : (
               <Inclinometer
@@ -330,7 +421,19 @@ export function OperationsWorkspace({ vehicle }: { vehicle: Vehicle }) {
                 limit={profile.limits.maxGrade ?? 25}
               />
             )}
-            <Compass heading={frame.heading} />
+            {/* A vessel's compass is the nav rose: heading, course over ground and the current
+                that separates them. Everything else keeps the plain compass. */}
+            {!under && frame.water ? (
+              <NavRose
+                heading={frame.heading}
+                course={frame.water.course}
+                set={frame.water.set}
+                drift={frame.water.drift}
+                stationKeeping={frame.water.stationKeeping}
+              />
+            ) : (
+              <Compass heading={frame.heading} />
+            )}
           </div>
           {!plan && (
             <div className="live-empty">
@@ -370,7 +473,7 @@ export function OperationsWorkspace({ vehicle }: { vehicle: Vehicle }) {
                       onClick={telemetry.arm}
                     />
                     <CmdButton
-                      icon={air ? <PlaneTakeoff /> : <Play />}
+                      icon={air ? <PlaneTakeoff /> : under ? <Waves /> : <Play />}
                       label={profile.commands.launch}
                       accent
                       disabled={stage !== 'armed'}
@@ -390,7 +493,7 @@ export function OperationsWorkspace({ vehicle }: { vehicle: Vehicle }) {
                       onClick={telemetry.returnHome}
                     />
                     <CmdButton
-                      icon={air ? <PlaneLanding /> : <CircleStop />}
+                      icon={air ? <PlaneLanding /> : water && !under ? <Anchor /> : <CircleStop />}
                       label={profile.commands.stop}
                       confirm={`CONFIRM ${profile.commands.stop}`}
                       disabled={!active}
@@ -429,7 +532,7 @@ export function OperationsWorkspace({ vehicle }: { vehicle: Vehicle }) {
                     <TeleopPad active={manual} onDrive={drive} />
                     <p className="mp-hint">
                       {manual
-                        ? 'WASD or arrow keys drive; release to stop. Resume route rejoins the plan.'
+                        ? `WASD or arrow keys ${under ? 'pilot' : water ? 'steer' : 'drive'}; release to stop. Resume route rejoins the plan.`
                         : 'Available while the mission is under way or paused.'}
                     </p>
                   </section>
@@ -456,7 +559,7 @@ export function OperationsWorkspace({ vehicle }: { vehicle: Vehicle }) {
               className="drone-control-panel"
               icon={<Battery />}
               title="Vehicle status"
-              subtitle={`${frame.battery}% · ${frame.link}% link · limit ${air ? `${maxAltitude} m / ` : ''}${maxSpeed} m/s`}
+              subtitle={`${frame.battery}% · ${frame.link}% link · limit ${air || under ? `${maxAltitude} m / ` : ''}${maxSpeed} m/s`}
               defaultOpen={false}
             >
               <div className="mp-body">
@@ -483,13 +586,21 @@ export function OperationsWorkspace({ vehicle }: { vehicle: Vehicle }) {
                   </div>
                 </section>
                 <section>
-                  <label>{air ? 'FLIGHT LIMITS' : 'DRIVE LIMITS'}</label>
-                  {air && (
+                  <label>
+                    {air
+                      ? 'FLIGHT LIMITS'
+                      : under
+                        ? 'DIVE LIMITS'
+                        : water
+                          ? 'HELM LIMITS'
+                          : 'DRIVE LIMITS'}
+                  </label>
+                  {(air || under) && (
                     <Range
-                      label="Maximum altitude"
+                      label={air ? 'Maximum altitude' : 'Maximum depth'}
                       value={maxAltitude}
-                      min={30}
-                      max={300}
+                      min={air ? 30 : 5}
+                      max={air ? 300 : 100}
                       unit="m"
                       onChange={setMaxAltitude}
                     />
@@ -498,11 +609,45 @@ export function OperationsWorkspace({ vehicle }: { vehicle: Vehicle }) {
                     label="Maximum speed"
                     value={maxSpeed}
                     min={air ? 2 : 1}
-                    max={air ? 24 : 12}
+                    max={air ? 24 : under ? 5 : 12}
                     unit="m/s"
                     onChange={setMaxSpeed}
                   />
                 </section>
+                {frame.water && (
+                  <section>
+                    <label>{under ? 'HULL & WATER' : 'WATER'}</label>
+                    <div className="camera-stats">
+                      {under && (
+                        <span>
+                          HULL<b>{frame.water.internalPressure.toFixed(1)} kPa</b>
+                        </span>
+                      )}
+                      {under && (
+                        <span>
+                          LEAK<b>{frame.water.leak ? 'DETECTED' : 'DRY'}</b>
+                        </span>
+                      )}
+                      <span>
+                        WATER<b>{frame.water.waterTemp.toFixed(1)} °C</b>
+                      </span>
+                      {!under && (
+                        <span>
+                          CURRENT
+                          <b>
+                            {(frame.water.drift * 1.944).toFixed(1)} kts ·{' '}
+                            {String(frame.water.set).padStart(3, '0')}°
+                          </b>
+                        </span>
+                      )}
+                      {!under && (
+                        <span>
+                          SEABED<b>{frame.water.seabed.toFixed(1)} m</b>
+                        </span>
+                      )}
+                    </div>
+                  </section>
+                )}
               </div>
             </FloatingPanel>
 
@@ -511,12 +656,12 @@ export function OperationsWorkspace({ vehicle }: { vehicle: Vehicle }) {
               className="drone-control-panel"
               icon={profile.payload === 'camera' ? <Camera /> : <ScanLine />}
               title={payloadTitle}
-              subtitle={`${mode} · ${air ? `gimbal ${gimbal.pitch}°` : `mast ${gimbal.yaw}°`}`}
+              subtitle={`${mode} · ${air ? `gimbal ${gimbal.pitch}°` : under ? `tilt ${gimbal.pitch}° · lights ${lights}%` : `mast ${gimbal.yaw}°`}`}
               defaultOpen={false}
             >
               <div className="mp-body">
                 <section>
-                  <label>{air ? 'CAMERA PAYLOAD' : 'MAST CAMERA'}</label>
+                  <label>{air ? 'CAMERA PAYLOAD' : under ? 'DIVE CAMERA' : 'MAST CAMERA'}</label>
                   <div className="camera-modes">
                     {(['EO', 'THERMAL', 'MAP'] as CameraMode[]).map(m => (
                       <button
@@ -536,25 +681,65 @@ export function OperationsWorkspace({ vehicle }: { vehicle: Vehicle }) {
                       SHUTTER<b>1/800</b>
                     </span>
                     <span>
-                      {air ? 'GIMBAL' : 'PAN'}
-                      <b>{air ? gimbal.pitch : gimbal.yaw}°</b>
+                      {air ? 'GIMBAL' : under ? 'TILT' : 'PAN'}
+                      <b>{air || under ? gimbal.pitch : gimbal.yaw}°</b>
                     </span>
                   </div>
+                  {under && (
+                    <div className="drone-range">
+                      <span>
+                        <label>Lights</label>
+                        <b>{lights}%</b>
+                      </span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={100}
+                        step={10}
+                        value={lights}
+                        onChange={e => setLights(Number(e.target.value))}
+                      />
+                    </div>
+                  )}
                 </section>
                 {profile.payload !== 'camera' && (
                   <section>
                     <label>{profile.payload === 'lidar' ? 'LIDAR' : 'SONAR'}</label>
                     <div className="camera-stats">
                       <span>
-                        RANGE<b>{profile.payload === 'lidar' ? '120 m' : '80 m'}</b>
+                        RANGE
+                        <b>{profile.payload === 'lidar' ? '120 m' : under ? '50 m' : '80 m'}</b>
                       </span>
                       <span>
                         RATE<b>{profile.payload === 'lidar' ? '10 Hz' : '4 Hz'}</b>
                       </span>
                       <span>
-                        NEAREST<b>{active ? 'CLEAR' : '—'}</b>
+                        {frame.water ? (under ? 'BOTTOM' : 'DEPTH') : 'NEAREST'}
+                        <b>
+                          {frame.water
+                            ? `${(under ? frame.water.altitudeAboveBottom : frame.water.seabed).toFixed(1)} m`
+                            : active
+                              ? 'CLEAR'
+                              : '—'}
+                        </b>
                       </span>
                     </div>
+                    {water && (
+                      <div className="drone-range">
+                        <span>
+                          <label>Sonar gain</label>
+                          <b>{sonarGain}%</b>
+                        </span>
+                        <input
+                          type="range"
+                          min={20}
+                          max={100}
+                          step={5}
+                          value={sonarGain}
+                          onChange={e => setSonarGain(Number(e.target.value))}
+                        />
+                      </div>
+                    )}
                   </section>
                 )}
                 <div className="gimbal-pad">
