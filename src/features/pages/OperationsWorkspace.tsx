@@ -3,65 +3,87 @@ import {
   AlertTriangle,
   Battery,
   Camera,
+  CircleStop,
   Crosshair,
+  Gamepad2,
   Gauge,
-  Maximize2,
+  History,
   Home,
+  Maximize2,
+  Mountain,
   Octagon,
   Pause,
+  Play,
   PlaneLanding,
   PlaneTakeoff,
-  Play,
   Radio,
+  Route as RouteIcon,
+  ScanLine,
   Settings2,
   ShieldCheck,
   Target,
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
-import type { Vehicle } from '../../types/domain'
-import { TypeIcon } from '../../components/common'
-import { FlightView3D } from './FlightView3D'
-import { AttitudeIndicator, Compass, LiveFeed, type CameraMode } from './LiveFlightWidgets'
-import { isAirborne, type FlightStage } from './flightSimulator'
-import { livePlanFor } from './missionPlan'
-import { HOME, METERS_PER_UNIT } from './missionGeometry'
 import { useGetMissionsQuery } from '../../services/api/baseApi'
-import type { TelemetryFrame } from './useFlightSimulation'
-import { useVehicleTelemetry } from './useVehicleTelemetry'
-import { WorkspaceHeader } from './WorkspaceHeader'
-import { HomeSourceChip } from './HomeSourceChip'
-import { useHome } from './homePosition'
+import { TypeIcon } from '../../components/common'
 import { FloatingPanel, PanelDock } from '../../components/layout/FloatingPanel'
+import type { Vehicle } from '../../types/domain'
+import { FlightView3D } from './FlightView3D'
+import { HomeSourceChip } from './HomeSourceChip'
+import {
+  AttitudeIndicator,
+  Compass,
+  Inclinometer,
+  LiveFeed,
+  TeleopPad,
+  type CameraMode,
+} from './LiveFlightWidgets'
+import { WorkspaceHeader } from './WorkspaceHeader'
+import { useHome } from './homePosition'
+import { useStreetNetwork, type ViewRect } from '../map/streetNetwork'
+import { HOME, METERS_PER_UNIT } from './missionGeometry'
+import { livePlanFor } from './missionPlan'
+import { isActive, type TelemetryFrame } from './missionSimulator'
+import { useVehicleTelemetry } from './useVehicleTelemetry'
+import { profileFor, stageTone, type StripIcon } from '../vehicles/vehicleProfile'
 
 const NO_AREAS: never[] = []
-const ENDURANCE_MIN = 35
 const noop = () => {}
 const clock = (seconds: number) =>
   `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`
+const timeOfDay = (at: number) =>
+  new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 
-const STAGE_LABEL: Record<FlightStage, string> = {
-  standby: 'STANDBY',
-  armed: 'ARMED',
-  flying: 'IN FLIGHT',
-  holding: 'HOLDING',
-  returning: 'RETURNING',
-  landed: 'LANDED',
-  aborted: 'ABORTED',
+const STRIP_ICONS: Record<StripIcon, ReactNode> = {
+  speed: <Gauge />,
+  altitude: <PlaneTakeoff />,
+  time: <Activity />,
+  gps: <Target />,
+  camera: <Camera />,
+  grade: <Mountain />,
+  odometer: <RouteIcon />,
+  elevation: <Mountain />,
 }
 
-type Alert = { level: 'warn' | 'critical'; text: string }
-
-export function DroneOperations({ vehicle }: { vehicle: Vehicle }) {
-  const [maxAltitude, setMaxAltitude] = useState(120)
-  const [maxSpeed, setMaxSpeed] = useState(12)
+/**
+ * Live operations for one vehicle: the 3D view with HUD, payload feed, instruments, the command
+ * set and alerts. Everything class-specific comes from the vehicle's profile.
+ */
+export function OperationsWorkspace({ vehicle }: { vehicle: Vehicle }) {
+  const profile = profileFor(vehicle.type)
+  const air = profile.domain === 'air'
+  const [maxAltitude, setMaxAltitude] = useState(profile.limits.maxAltitude ?? 0)
+  const [maxSpeed, setMaxSpeed] = useState(profile.limits.maxSpeed)
   const [mode, setMode] = useState<CameraMode>('EO')
-  const [gimbal, setGimbal] = useState({ pitch: -75, yaw: 0 })
+  const [gimbal, setGimbal] = useState(air ? { pitch: -75, yaw: 0 } : { pitch: -14, yaw: 0 })
   const [view3d, setView3d] = useState(true)
   /** Swap the stage: map with feed picture-in-picture, or feed full with the map as the PiP. */
   const [feedPrimary, setFeedPrimary] = useState(false)
   const pathRef = useRef<SVGPathElement>(null)
   const home = useHome()
+  const [view, setView] = useState<ViewRect | null>(null)
+  const streets = useStreetNetwork(profile.streetRouting, view)
   const {
     data: missions = [],
     isSuccess: missionsLoaded,
@@ -74,6 +96,7 @@ export function DroneOperations({ vehicle }: { vehicle: Vehicle }) {
   )
   const telemetry = useVehicleTelemetry(
     vehicle.id,
+    profile,
     plan,
     vehicle.battery,
     missionsLoaded && !missionsFetching,
@@ -85,74 +108,92 @@ export function DroneOperations({ vehicle }: { vehicle: Vehicle }) {
       altitude: 0,
       groundSpeed: 0,
       distance: 0,
-      total: 0,
+      total: plan?.totalMeters ?? 0,
       progress: 0,
       phase: 'standby',
       battery: vehicle.battery,
       link: vehicle.link,
       satellites: 18,
-      flightSeconds: 0,
-      remainingMeters: 0,
-      remainingSeconds: 0,
+      elapsedSeconds: 0,
+      remainingMeters: plan?.totalMeters ?? 0,
+      remainingSeconds: plan && plan.speed ? plan.totalMeters / plan.speed : 0,
       waypoint: { index: 0, total: plan?.waypointCount ?? 0 },
       pitch: 0,
       roll: 0,
       verticalSpeed: 0,
+      ...(air
+        ? {}
+        : {
+            ground: { grade: 0, elevation: 0, crossTrack: 0, odometer: 0, driveMode: 'auto' },
+          }),
     }),
-    [vehicle.heading, vehicle.battery, vehicle.link, plan?.waypointCount],
+    [vehicle.heading, vehicle.battery, vehicle.link, plan, air],
   )
   const frame = telemetry.frame ?? standby
   const stage = plan ? telemetry.stage : 'standby'
-  const airborne = isAirborne(stage)
-  const minutesLeft = Math.round(frame.battery * (ENDURANCE_MIN / 100))
+  const active = isActive(stage)
+  const manual = stage === 'manual'
+  const minutesLeft = Math.round(frame.battery * (profile.limits.enduranceMin / 100))
+  const canTeleop = profile.teleop && vehicle.capabilities.includes('manualControl')
 
-  const alerts = useMemo<Alert[]>(() => {
-    const list: Alert[] = []
-    if (frame.battery < 20) list.push({ level: 'critical', text: 'Battery critical · land now' })
-    else if (frame.battery < 30) list.push({ level: 'warn', text: 'Battery low · plan return' })
-    if (frame.link < 50) list.push({ level: 'critical', text: 'Link degraded · failsafe armed' })
-    else if (frame.link < 65) list.push({ level: 'warn', text: 'Link weak' })
-    if (plan && plan.altitude > maxAltitude)
-      list.push({
-        level: 'warn',
-        text: `Plan altitude ${plan.altitude} m exceeds ${maxAltitude} m limit`,
-      })
-    if (plan && plan.speed > maxSpeed)
-      list.push({
-        level: 'warn',
-        text: `Plan speed ${plan.speed} m/s exceeds ${maxSpeed} m/s limit`,
-      })
-    if (newerDraft && plan)
-      list.push({ level: 'warn', text: 'Newer plan draft not uploaded · flying previous version' })
-    if (stage === 'aborted')
-      list.push({ level: 'critical', text: 'Mission aborted · motors stopped' })
-    return list
-  }, [frame.battery, frame.link, plan, maxAltitude, maxSpeed, newerDraft, stage])
+  const alerts = useMemo(
+    () =>
+      profile.alerts({
+        frame,
+        stage,
+        plan: plan ? { name: plan.mission.name, altitude: plan.altitude, speed: plan.speed } : null,
+        limits: { maxAltitude, maxSpeed },
+        newerDraft,
+      }),
+    [profile, frame, stage, plan, maxAltitude, maxSpeed, newerDraft],
+  )
 
   const hudInfo = useMemo(
     () => ({
       details: [
-        `${vehicle.controller}${vehicle.firmware ? ` ${vehicle.firmware}` : ''} · ${vehicle.board ?? 'Quadcopter'}`,
+        `${vehicle.controller}${vehicle.firmware ? ` ${vehicle.firmware}` : ''} · ${
+          vehicle.board ??
+          (profile.model === 'quadcopter'
+            ? 'Quadcopter'
+            : profile.model === 'rover'
+              ? 'Rover'
+              : 'Vessel')
+        }`,
         plan
           ? `${plan.mission.name} · ${plan.mission.status === 'ready' ? 'UPLOADED' : 'DRAFT'}`
           : 'NO MISSION',
       ],
     }),
-    [vehicle, plan],
+    [vehicle, plan, profile.model],
   )
   const nudge = (dp: number, dy: number) =>
     setGimbal(g => ({
-      pitch: Math.max(-90, Math.min(0, g.pitch + dp)),
+      pitch: air
+        ? Math.max(-90, Math.min(0, g.pitch + dp))
+        : Math.max(-40, Math.min(20, g.pitch + dp)),
       yaw: Math.max(-90, Math.min(90, g.yaw + dy)),
     }))
+  const drive = useCallback(
+    (input: { throttle: number; steer: number }) => telemetry.drive(input),
+    [telemetry.drive],
+  )
+  const stageLabel = profile.stages[stage]
+  const strip = profile.strip(frame)
+  const payloadTitle =
+    profile.payload === 'camera'
+      ? 'Camera payload'
+      : profile.payload === 'lidar'
+        ? 'Sensor payload'
+        : 'Sonar payload'
 
   return (
     <div className="drone-workspace">
       <WorkspaceHeader
         vehicle={vehicle}
+        profile={profile}
         active="live"
         backTo="/"
-        lifecycle={plan ? STAGE_LABEL[stage].toLowerCase() : undefined}
+        lifecycle={plan ? { label: stageLabel, tone: stageTone(stage) } : undefined}
         link={frame.link}
         battery={frame.battery}
       />
@@ -163,10 +204,11 @@ export function DroneOperations({ vehicle }: { vehicle: Vehicle }) {
           data-drag-host
         >
           <FlightView3D
+            profile={profile}
             pathRef={pathRef}
             pathKey={plan?.path ?? ''}
             metersPerUnit={METERS_PER_UNIT}
-            altitude={plan?.altitude ?? maxAltitude}
+            altitude={air ? (plan?.altitude ?? maxAltitude) : 0}
             areas={plan?.areas ?? NO_AREAS}
             home={HOME}
             frame={frame}
@@ -179,8 +221,12 @@ export function DroneOperations({ vehicle }: { vehicle: Vehicle }) {
             callsign={vehicle.id}
             hud={hudInfo}
             originKey={home.key}
-            rotors={
-              !plan || stage === 'standby' || stage === 'landed' || stage === 'aborted'
+            network={profile.streetRouting ? streets.network : null}
+            basemap={profile.streetRouting ? 'tactical' : 'satellite'}
+            onViewChange={profile.streetRouting ? setView : undefined}
+            fitRoute
+            motion={
+              !plan || stage === 'standby' || stage === 'complete' || stage === 'aborted'
                 ? 'off'
                 : stage === 'armed'
                   ? 'idle'
@@ -202,9 +248,19 @@ export function DroneOperations({ vehicle }: { vehicle: Vehicle }) {
           )}
           <div className="live-topbar">
             <span className={`live-chip stage-${stage}`}>
-              <i /> LIVE · {vehicle.id} · {STAGE_LABEL[stage]}
+              <i /> LIVE · {vehicle.id} · {stageLabel}
             </span>
             <HomeSourceChip />
+            {profile.streetRouting && (
+              <span className={`street-chip ${streets.status}`} title={streets.error}>
+                <i />
+                {streets.status === 'ready'
+                  ? 'MAP DATA · READY'
+                  : streets.status === 'error'
+                    ? 'MAP DATA · UNAVAILABLE'
+                    : `MAP DATA · ${streets.coverage.loaded}/${streets.coverage.wanted} TILES`}
+              </span>
+            )}
             <div className="view-switch" role="group" aria-label="Map view">
               <button className={view3d ? '' : 'on'} onClick={() => setView3d(false)}>
                 2D
@@ -229,7 +285,7 @@ export function DroneOperations({ vehicle }: { vehicle: Vehicle }) {
                 </span>
               )}
               <span>
-                <label>FLOWN</label>
+                <label>{air ? 'FLOWN' : 'COVERED'}</label>
                 <b>{(frame.distance / 1000).toFixed(2)} km</b>
               </span>
               <span>
@@ -238,6 +294,12 @@ export function DroneOperations({ vehicle }: { vehicle: Vehicle }) {
                   {(frame.remainingMeters / 1000).toFixed(2)} km · {clock(frame.remainingSeconds)}
                 </b>
               </span>
+              {frame.ground && frame.ground.driveMode === 'manual' && (
+                <span>
+                  <label>OFF ROUTE</label>
+                  <b>{frame.ground.crossTrack.toFixed(0)} m</b>
+                </span>
+              )}
               <i className="live-progress-bar">
                 <b style={{ width: `${frame.progress * 100}%` }} />
               </i>
@@ -249,9 +311,25 @@ export function DroneOperations({ vehicle }: { vehicle: Vehicle }) {
             gimbal={gimbal}
             primary={feedPrimary}
             onSwap={() => setFeedPrimary(p => !p)}
+            caption={
+              air ? `GIMBAL ${gimbal.pitch}°` : `MAST ${gimbal.yaw >= 0 ? '+' : ''}${gimbal.yaw}°`
+            }
           />
           <div className="instruments">
-            <AttitudeIndicator pitch={frame.pitch} roll={frame.roll} climb={frame.verticalSpeed} />
+            {profile.instruments === 'attitude' ? (
+              <AttitudeIndicator
+                pitch={frame.pitch}
+                roll={frame.roll}
+                climb={frame.verticalSpeed}
+              />
+            ) : (
+              <Inclinometer
+                pitch={frame.pitch}
+                roll={frame.roll}
+                grade={frame.ground?.grade ?? 0}
+                limit={profile.limits.maxGrade ?? 25}
+              />
+            )}
             <Compass heading={frame.heading} />
           </div>
           {!plan && (
@@ -268,9 +346,9 @@ export function DroneOperations({ vehicle }: { vehicle: Vehicle }) {
             <FloatingPanel
               id="commands"
               className="drone-control-panel"
-              icon={<TypeIcon type="UAV" size={20} />}
+              icon={<TypeIcon type={vehicle.type} size={20} />}
               title={vehicle.name}
-              subtitle={`${vehicle.controller} · ${vehicle.protocol} flight controller`}
+              subtitle={`${vehicle.controller} · ${vehicle.protocol}`}
               actions={
                 <Link
                   className="mp-icon-btn"
@@ -283,56 +361,79 @@ export function DroneOperations({ vehicle }: { vehicle: Vehicle }) {
             >
               <div className="mp-body">
                 <section>
-                  <label>FLIGHT COMMANDS</label>
+                  <label>{profile.words.commandsLabel}</label>
                   <div className="cmd-grid">
                     <CmdButton
                       icon={<ShieldCheck />}
-                      label={stage === 'armed' ? 'ARMED' : 'ARM'}
+                      label={stage === 'armed' ? `${profile.commands.arm}D` : profile.commands.arm}
                       disabled={!plan || stage !== 'standby'}
                       onClick={telemetry.arm}
                     />
                     <CmdButton
-                      icon={<PlaneTakeoff />}
-                      label="TAKEOFF"
+                      icon={air ? <PlaneTakeoff /> : <Play />}
+                      label={profile.commands.launch}
                       accent
                       disabled={stage !== 'armed'}
-                      onClick={telemetry.takeoff}
+                      onClick={telemetry.launch}
                     />
                     <CmdButton
                       icon={stage === 'holding' ? <Play /> : <Pause />}
-                      label={stage === 'holding' ? 'RESUME' : 'HOLD'}
-                      disabled={!airborne}
+                      label={stage === 'holding' ? profile.commands.resume : profile.commands.hold}
+                      disabled={!active || manual}
                       onClick={stage === 'holding' ? telemetry.resume : telemetry.hold}
                     />
                     <CmdButton
                       icon={<Home />}
-                      label="RTL"
-                      confirm="CONFIRM RTL"
-                      disabled={!airborne || stage === 'returning'}
+                      label={profile.commands.return}
+                      confirm={`CONFIRM ${profile.commands.return}`}
+                      disabled={!active || stage === 'returning'}
                       onClick={telemetry.returnHome}
                     />
                     <CmdButton
-                      icon={<PlaneLanding />}
-                      label="LAND"
-                      confirm="CONFIRM LAND"
-                      disabled={!airborne}
-                      onClick={telemetry.land}
+                      icon={air ? <PlaneLanding /> : <CircleStop />}
+                      label={profile.commands.stop}
+                      confirm={`CONFIRM ${profile.commands.stop}`}
+                      disabled={!active}
+                      onClick={telemetry.stop}
                     />
                     <CmdButton
                       icon={<Octagon />}
-                      label="ABORT"
+                      label={profile.commands.abort}
                       danger
-                      confirm="CONFIRM ABORT"
-                      disabled={stage === 'standby' || stage === 'aborted' || stage === 'landed'}
+                      confirm={`CONFIRM ${profile.commands.abort}`}
+                      disabled={stage === 'standby' || stage === 'aborted' || stage === 'complete'}
                       onClick={telemetry.abort}
                     />
                   </div>
-                  {(stage === 'landed' || stage === 'aborted') && (
+                  {(stage === 'complete' || stage === 'aborted') && (
                     <button className="mp-btn block" onClick={telemetry.reset}>
                       Reset to standby
                     </button>
                   )}
                 </section>
+                {canTeleop && (
+                  <section>
+                    <label>MANUAL CONTROL</label>
+                    <div className="mp-row">
+                      <button
+                        className={`mp-btn${manual ? '' : ' accent'}`}
+                        disabled={manual || (stage !== 'active' && stage !== 'holding')}
+                        onClick={telemetry.takeControl}
+                      >
+                        <Gamepad2 /> Take control
+                      </button>
+                      <button className="mp-btn" disabled={!manual} onClick={telemetry.resumeAuto}>
+                        <RouteIcon /> Resume route
+                      </button>
+                    </div>
+                    <TeleopPad active={manual} onDrive={drive} />
+                    <p className="mp-hint">
+                      {manual
+                        ? 'WASD or arrow keys drive; release to stop. Resume route rejoins the plan.'
+                        : 'Available while the mission is under way or paused.'}
+                    </p>
+                  </section>
+                )}
                 <section>
                   <label>ALERTS</label>
                   {alerts.length === 0 ? (
@@ -355,7 +456,7 @@ export function DroneOperations({ vehicle }: { vehicle: Vehicle }) {
               className="drone-control-panel"
               icon={<Battery />}
               title="Vehicle status"
-              subtitle={`${frame.battery}% · ${frame.link}% link · limits ${maxAltitude} m / ${maxSpeed} m/s`}
+              subtitle={`${frame.battery}% · ${frame.link}% link · limit ${air ? `${maxAltitude} m / ` : ''}${maxSpeed} m/s`}
               defaultOpen={false}
             >
               <div className="mp-body">
@@ -365,7 +466,12 @@ export function DroneOperations({ vehicle }: { vehicle: Vehicle }) {
                     <Battery />
                     <span>
                       <b>{frame.battery}%</b>
-                      <small>{minutesLeft} min remaining</small>
+                      <small>
+                        {minutesLeft} min remaining
+                        {!air && plan
+                          ? ` · ~${((minutesLeft * 60 * plan.speed) / 1000).toFixed(1)} km range`
+                          : ''}
+                      </small>
                     </span>
                   </div>
                   <div className={`bar${frame.battery < 30 ? ' low' : ''}`}>
@@ -377,20 +483,22 @@ export function DroneOperations({ vehicle }: { vehicle: Vehicle }) {
                   </div>
                 </section>
                 <section>
-                  <label>FLIGHT LIMITS</label>
-                  <Range
-                    label="Maximum altitude"
-                    value={maxAltitude}
-                    min={30}
-                    max={300}
-                    unit="m"
-                    onChange={setMaxAltitude}
-                  />
+                  <label>{air ? 'FLIGHT LIMITS' : 'DRIVE LIMITS'}</label>
+                  {air && (
+                    <Range
+                      label="Maximum altitude"
+                      value={maxAltitude}
+                      min={30}
+                      max={300}
+                      unit="m"
+                      onChange={setMaxAltitude}
+                    />
+                  )}
                   <Range
                     label="Maximum speed"
                     value={maxSpeed}
-                    min={2}
-                    max={24}
+                    min={air ? 2 : 1}
+                    max={air ? 24 : 12}
                     unit="m/s"
                     onChange={setMaxSpeed}
                   />
@@ -401,14 +509,14 @@ export function DroneOperations({ vehicle }: { vehicle: Vehicle }) {
             <FloatingPanel
               id="camera"
               className="drone-control-panel"
-              icon={<Camera />}
-              title="Camera payload"
-              subtitle={`${mode} · gimbal ${gimbal.pitch}°`}
+              icon={profile.payload === 'camera' ? <Camera /> : <ScanLine />}
+              title={payloadTitle}
+              subtitle={`${mode} · ${air ? `gimbal ${gimbal.pitch}°` : `mast ${gimbal.yaw}°`}`}
               defaultOpen={false}
             >
               <div className="mp-body">
                 <section>
-                  <label>CAMERA PAYLOAD</label>
+                  <label>{air ? 'CAMERA PAYLOAD' : 'MAST CAMERA'}</label>
                   <div className="camera-modes">
                     {(['EO', 'THERMAL', 'MAP'] as CameraMode[]).map(m => (
                       <button
@@ -428,14 +536,34 @@ export function DroneOperations({ vehicle }: { vehicle: Vehicle }) {
                       SHUTTER<b>1/800</b>
                     </span>
                     <span>
-                      GIMBAL<b>{gimbal.pitch}°</b>
+                      {air ? 'GIMBAL' : 'PAN'}
+                      <b>{air ? gimbal.pitch : gimbal.yaw}°</b>
                     </span>
                   </div>
                 </section>
+                {profile.payload !== 'camera' && (
+                  <section>
+                    <label>{profile.payload === 'lidar' ? 'LIDAR' : 'SONAR'}</label>
+                    <div className="camera-stats">
+                      <span>
+                        RANGE<b>{profile.payload === 'lidar' ? '120 m' : '80 m'}</b>
+                      </span>
+                      <span>
+                        RATE<b>{profile.payload === 'lidar' ? '10 Hz' : '4 Hz'}</b>
+                      </span>
+                      <span>
+                        NEAREST<b>{active ? 'CLEAR' : '—'}</b>
+                      </span>
+                    </div>
+                  </section>
+                )}
                 <div className="gimbal-pad">
                   <button onClick={() => nudge(5, 0)}>↑</button>
                   <button onClick={() => nudge(0, -10)}>←</button>
-                  <i onClick={() => setGimbal({ pitch: -75, yaw: 0 })} title="Centre gimbal">
+                  <i
+                    onClick={() => setGimbal(air ? { pitch: -75, yaw: 0 } : { pitch: -14, yaw: 0 })}
+                    title="Centre camera"
+                  >
                     <Crosshair />
                   </i>
                   <button onClick={() => nudge(0, 10)}>→</button>
@@ -443,32 +571,57 @@ export function DroneOperations({ vehicle }: { vehicle: Vehicle }) {
                 </div>
               </div>
             </FloatingPanel>
+
+            <FloatingPanel
+              id="timeline"
+              className="drone-control-panel"
+              icon={<History />}
+              title="Mission timeline"
+              subtitle={
+                telemetry.events.length
+                  ? `${telemetry.events.length} events · ${clock(frame.elapsedSeconds)} elapsed`
+                  : 'No events yet'
+              }
+              defaultOpen={false}
+            >
+              <div className="mp-body">
+                <section>
+                  <label>STAGE HISTORY</label>
+                  {telemetry.events.length === 0 ? (
+                    <p className="mp-hint">
+                      Stage changes are logged here once the mission starts.
+                    </p>
+                  ) : (
+                    <ol className="timeline">
+                      {[...telemetry.events].reverse().map(e => (
+                        <li key={e.at} className={`tone-${stageTone(e.stage)}`}>
+                          <i />
+                          <b>{profile.stages[e.stage]}</b>
+                          <small>{timeOfDay(e.at)}</small>
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                </section>
+              </div>
+            </FloatingPanel>
           </PanelDock>
         </section>
 
         <footer className="drone-telemetry-strip">
-          <Telemetry
-            icon={<Gauge />}
-            label="GROUND SPEED"
-            value={`${frame.groundSpeed.toFixed(0)} m/s`}
-          />
-          <Telemetry
-            icon={<PlaneTakeoff />}
-            label="ALTITUDE"
-            value={`${Math.round(frame.altitude)} m`}
-          />
-          <Telemetry icon={<Activity />} label="FLIGHT TIME" value={clock(frame.flightSeconds)} />
-          <Telemetry icon={<Target />} label="GPS" value={`RTK FIX · ${frame.satellites}`} />
-          <Telemetry
-            icon={<Camera />}
-            label="CAPTURED"
-            value={`${Math.floor(frame.distance / 12)} frames`}
-          />
+          {strip.map(item => (
+            <Telemetry
+              key={item.label}
+              icon={STRIP_ICONS[item.icon]}
+              label={item.label}
+              value={item.value}
+            />
+          ))}
           <div className={`flight-state stage-${stage}`}>
             <i />
             <span>
               <label>STATE</label>
-              <b>{STAGE_LABEL[stage]}</b>
+              <b>{stageLabel}</b>
             </span>
           </div>
         </footer>
@@ -482,43 +635,36 @@ function CmdButton({
   icon,
   label,
   confirm,
-  disabled,
   accent,
   danger,
+  disabled,
   onClick,
 }: {
   icon: ReactNode
   label: string
   confirm?: string
-  disabled?: boolean
   accent?: boolean
   danger?: boolean
+  disabled?: boolean
   onClick: () => void
 }) {
   const [pending, setPending] = useState(false)
-  useEffect(() => {
-    if (!pending) return
-    const t = window.setTimeout(() => setPending(false), 4000)
-    return () => window.clearTimeout(t)
-  }, [pending])
-  useEffect(() => {
-    if (disabled) setPending(false)
-  }, [disabled])
-  const cls = ['cmd-btn', accent && 'accent', danger && 'danger', pending && 'pending']
-    .filter(Boolean)
-    .join(' ')
+  const timer = useRef(0)
+  const press = () => {
+    if (!confirm) return onClick()
+    if (pending) {
+      window.clearTimeout(timer.current)
+      setPending(false)
+      return onClick()
+    }
+    setPending(true)
+    timer.current = window.setTimeout(() => setPending(false), 4000)
+  }
   return (
     <button
-      className={cls}
+      className={`cmd-btn${accent ? ' accent' : ''}${danger ? ' danger' : ''}${pending ? ' pending' : ''}`}
       disabled={disabled}
-      onClick={() => {
-        if (confirm && !pending) {
-          setPending(true)
-          return
-        }
-        setPending(false)
-        onClick()
-      }}
+      onClick={press}
     >
       {icon}
       {pending ? confirm : label}
@@ -559,6 +705,7 @@ function Range({
     </div>
   )
 }
+
 function Telemetry({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
   return (
     <div className="drone-telemetry">

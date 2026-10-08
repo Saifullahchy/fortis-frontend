@@ -1,4 +1,6 @@
 export type VehicleType = 'UAV' | 'UGV' | 'USV' | 'UUV'
+/** Operating medium. Drives the motion model, instruments and vocabulary; never the protocol. */
+export type VehicleDomain = 'air' | 'ground' | 'surface' | 'underwater'
 export type VehicleCapability =
   | 'goto'
   | 'manualControl'
@@ -50,14 +52,30 @@ export interface PlanPoint {
   x: number
   y: number
 }
+/**
+ * Every plan mode the planner knows. Which ones a vehicle offers, and what they are called, comes
+ * from its profile: a UAV surveys, a UGV covers; a UAV flies point-to-point, a UGV drives a route.
+ */
+export type PlanMode =
+  'survey' | 'p2p' | 'orbit' | 'maneuver' | 'route' | 'patrol' | 'coverage' | 'street'
+/** Road classes a ground vehicle may use when routing along streets. */
+export type RoadClass = 'roads' | 'service' | 'paths'
+export interface StreetOptions {
+  classes: RoadClass[]
+  /** Penalise primary and secondary roads so the route prefers quieter streets. */
+  avoidMajor: boolean
+  /** How far off the nearest street a target may sit and still be driven to, metres. */
+  approachMeters: number
+}
+export type PlanGeometry = 'area' | 'points' | 'orbit' | 'maneuver'
 export interface PlannerDraft {
-  planMode: 'survey' | 'p2p' | 'orbit' | 'maneuver'
-  altitude: number
-  speed: number
-  overlap: number
-  spacing: number
-  returnAltitude: number
+  planMode: PlanMode
+  /** Numeric parameters keyed by the profile's parameter ids (speed, altitude, spacing, …). */
+  params: Record<string, number>
   linkLoss: string
+  street: StreetOptions
+  /** Ground coverage: sweep the streets in the area, or the open ground between obstacles. */
+  coverageStyle?: 'auto' | 'streets' | 'field'
   surveyPoints: PlanPoint[]
   boundaryComplete: boolean
   zones: PlanPoint[][]
@@ -71,7 +89,7 @@ export interface PlannerDraft {
   patternSize: number
   heading: number
   repeats: number
-  activePreset: Record<'survey' | 'p2p' | 'orbit' | 'maneuver', string>
+  activePreset: Partial<Record<PlanMode, string>>
   customSurvey: {
     points: PlanPoint[]
     zones: PlanPoint[][]
@@ -81,12 +99,21 @@ export interface PlannerDraft {
 }
 export interface MissionPlan {
   draft?: PlannerDraft
-  /** Planner path in screen units; keeps Live Flight on the exact planned geometry. */
+  /** Planner path in screen units; keeps the live view on the exact planned geometry. */
   pathData?: string
   mode: string
+  domain: VehicleDomain
+  /** Cruise height for air vehicles, depth for underwater ones, 0 otherwise. */
   altitude: number
   speed: number
   transitMeters: [number, number]
+  /** Path lengths (screen units) where the vehicle stops and dwells, for ground-style routes. */
+  stopUnits?: number[]
+  dwellSeconds?: number
+  /** Waypoint acceptance radius, metres, for ground-style routes. */
+  acceptMeters?: number
+  /** Building footprints the route steers around, detected from map data (screen units). */
+  autoObstacles?: PlanPoint[][]
 }
 export interface Mission {
   id: string

@@ -11,6 +11,7 @@ import {
   Viewer,
 } from 'cesium'
 import 'cesium/Build/Cesium/Widgets/widgets.css'
+import { addBoundariesLayer } from '../referenceLayers'
 
 type MapMode = 'TACTICAL' | 'SATELLITE' | 'TERRAIN' | '3D'
 type CameraMode = 'TOP' | '3D' | 'FOLLOW'
@@ -134,6 +135,8 @@ export function CesiumCanvas({
     const layer = v.imageryLayers.addImageryProvider(providerFor(mode))
     layer.brightness = mode === 'TACTICAL' ? 0.58 : mode === 'TERRAIN' ? 0.82 : 1
     layer.contrast = mode === 'TACTICAL' ? 1.12 : 1
+    // Imagery carries no names; overlay borders and places so the sector reads in context.
+    if (mode === 'SATELLITE' || mode === '3D') addBoundariesLayer(v)
   }, [mode])
   useEffect(() => {
     const v = viewerRef.current

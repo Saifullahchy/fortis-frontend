@@ -1,7 +1,8 @@
 import { Pause, Play, RotateCcw } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { Point } from './missionGeometry'
-import type { TelemetrySource } from './useFlightSimulation'
+import type { TelemetrySource } from './useMissionSimulation'
+import type { VehicleProfile } from '../vehicles/vehicleProfile'
 
 /** Geographic anchor of the planning grid; moved by setMissionOrigin() to follow the home fix. */
 const ORIGIN = { lat: 23.81, lng: 90.36 }
@@ -68,11 +69,13 @@ export function MapStatusStrip({
 
 export function SimulationHud({
   sim,
+  profile,
   disabled,
   view3d,
   onSetView,
 }: {
   sim: TelemetrySource
+  profile: VehicleProfile
   disabled: boolean
   view3d: boolean
   onSetView: (view3d: boolean) => void
@@ -104,7 +107,7 @@ export function SimulationHud({
           className="sim-btn"
           disabled={disabled}
           onClick={sim.playing ? sim.pause : sim.play}
-          title={sim.playing ? 'Pause simulation' : 'Fly planned route'}
+          title={sim.playing ? 'Pause simulation' : profile.words.playTitle}
         >
           {sim.playing ? <Pause /> : <Play />}
         </button>
@@ -116,13 +119,20 @@ export function SimulationHud({
         <i style={{ width: `${(f?.progress ?? 0) * 100}%` }} />
       </div>
       <dl>
-        <div>
-          <dt>ALT</dt>
-          <dd>{f?.altitude ?? 0} m</dd>
-        </div>
+        {profile.domain === 'air' ? (
+          <div>
+            <dt>ALT</dt>
+            <dd>{f?.altitude ?? 0} m</dd>
+          </div>
+        ) : (
+          <div>
+            <dt>GRADE</dt>
+            <dd>{(f?.ground?.grade ?? 0).toFixed(0)}%</dd>
+          </div>
+        )}
         <div>
           <dt>GS</dt>
-          <dd>{(f?.groundSpeed ?? 0).toFixed(0)} m/s</dd>
+          <dd>{(f?.groundSpeed ?? 0).toFixed(profile.domain === 'air' ? 0 : 1)} m/s</dd>
         </div>
         <div>
           <dt>HDG</dt>

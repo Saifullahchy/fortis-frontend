@@ -1,4 +1,8 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
+import type { VehicleProfile } from '../vehicles/vehicleProfile'
+import { vehicleModel } from './vehicleModels'
+import { addBoundariesLayer } from '../map/referenceLayers'
+import type { ViewRect } from '../map/streetNetwork'
 import {
   Cartesian2,
   Cartesian3,
@@ -13,6 +17,7 @@ import {
   TranslationRotationScale,
   PolylineDashMaterialProperty,
   PolylineGlowMaterialProperty,
+  PolylineOutlineMaterialProperty,
   ScreenSpaceEventHandler,
   ScreenSpaceEventType,
   Color,
@@ -29,11 +34,11 @@ import {
 import 'cesium/Build/Cesium/Widgets/widgets.css'
 import { fromGeo, toGeo } from './MissionHud'
 import type { Point } from './missionGeometry'
-import type { TelemetryFrame } from './useFlightSimulation'
-import { DRONE_MODEL_URI, ROTOR_DIRECTIONS } from './droneModel'
+import type { TelemetryFrame } from './useMissionSimulation'
 import { drawHud, type HudTarget } from './hudOverlay'
 import { MAP_COLORS, routeLine } from './mapStyle'
 
+export type Basemap = 'satellite' | 'street' | 'tactical'
 export interface EditHandle {
   kind: 'area' | 'zone' | 'wp' | 'center' | 'anchor'
   index: number
@@ -47,12 +52,21 @@ interface EditTarget {
 }
 
 interface Props {
+  profile: VehicleProfile
   pathRef: RefObject<SVGPathElement | null>
   pathKey: string
   metersPerUnit: number
   altitude: number
-  areas: Array<{ points: Point[]; kind: 'area' | 'zone' }>
+  areas: Array<{ points: Point[]; kind: 'area' | 'zone' | 'building' }>
   home: Point
+  /** Street network and building footprints to draw under the plan, in screen units. */
+  network?: { roads: Array<{ points: Point[] }>; buildings: Point[][] } | null
+  /** Basemap to start on; the operator can still cycle it from the view tools. */
+  basemap?: Basemap
+  /** Reports the ground area in view whenever the camera settles, for view-following data. */
+  onViewChange?: (view: ViewRect) => void
+  /** Frame the whole route when it first appears (live view), not just the base. */
+  fitRoute?: boolean
   frame: TelemetryFrame | null
   trail: Point[]
   handles: EditHandle[]
@@ -66,8 +80,8 @@ interface Props {
   callsign?: string
   /** Tracking HUD: bracket and callout card. */
   hud?: { details: string[] }
-  /** Motor state from the flight controller: off on the pad, idle when armed, run when flying. */
-  rotors?: 'off' | 'idle' | 'run'
+  /** Propulsion state: off when parked, idle when armed, run when under way. */
+  motion?: 'off' | 'idle' | 'run'
   /** Changes when the home fix moves the planning grid; geometry is rebuilt and re-framed. */
   originKey?: string
 }
@@ -83,8 +97,23 @@ const TEAL = MAP_COLORS.plan
 const BLUE = MAP_COLORS.sensor
 const AMBER = MAP_COLORS.zone
 const GLOW_TEAL = MAP_COLORS.areaGlow
+const BUILDING = Color.fromCssColorString('#d9a066')
+const ROAD = Color.fromCssColorString('#7fd8ff')
+const FOOTPRINT = Color.fromCssColorString('#d9a066')
+const MAX_FOOTPRINTS = 1500
 const ZONE_HEIGHT = 60
 const sheets = new Map<string, HTMLCanvasElement>()
+/** Fly the camera so the whole route fits: straight down in 2D, a tilted look in 3D. */
+function fitToRoute(viewer: Viewer, route: Cartesian3[], tilted: boolean) {
+  const sphere = BoundingSphere.fromPoints(route)
+  sphere.radius = Math.max(sphere.radius * 1.25, 60)
+  viewer.camera.flyToBoundingSphere(sphere, {
+    offset: new HeadingPitchRange(0, CesiumMath.toRadians(tilted ? -40 : -90), 0),
+    duration: 0.9,
+  })
+}
+const distanceToHome = (polygon: Point[], home: Point) =>
+  Math.min(...polygon.map(p => Math.hypot(p.x - home.x, p.y - home.y)))
 /** Vertical gradient texture for glossy walls: transparent at the bottom, bright at the top. */
 function gradientSheet(color: Color, peak: number) {
   const key = `${color.toCssColorString()}:${peak}`
@@ -108,6 +137,7 @@ function gradientSheet(color: Color, peak: number) {
 }
 
 export function FlightView3D({
+  profile,
   pathRef,
   pathKey,
   metersPerUnit,
@@ -124,9 +154,23 @@ export function FlightView3D({
   gimbal,
   callsign = 'UAV',
   hud,
-  rotors,
+  motion,
   originKey = '',
+  network = null,
+  basemap: basemapProp = 'satellite',
+  onViewChange,
+  fitRoute = false,
 }: Props) {
+  const fittedFor = useRef('')
+  const onViewRef = useRef(onViewChange)
+  onViewRef.current = onViewChange
+  const air = profile.domain === 'air'
+  const model = vehicleModel(profile.model)
+  /** Height of area volumes and point handles: flight level in the air, a low kerb on the ground. */
+  const volumeTop = air ? Math.max(altitude, 10) : 6
+  const zoneTop = air ? ZONE_HEIGHT : 8
+  const handleTop = air ? Math.max(altitude, 10) : 3
+  const routeHeight = air ? altitude : 0.8
   const host = useRef<HTMLDivElement>(null)
   const viewerRef = useRef<Viewer | null>(null)
   const drone = useRef<Entity | null>(null)
@@ -140,13 +184,41 @@ export function FlightView3D({
   const hudCards = useRef<HTMLCanvasElement>(null)
   const hudTarget = useRef<HudTarget | null>(null)
   const spin = useRef(false)
-  /** Rotor physics: rpm spools toward a target; blades turn and the blur disc fades in with it. */
+  /** Spin physics: rotors spool toward an rpm target; wheels roll with ground speed. */
   const rotor = useRef({ rpm: 0, target: 0, angle: [0, 0, 0, 0], last: 0 })
-  const rotorsRef = useRef(rotors)
-  rotorsRef.current = rotors
+  const motionRef = useRef(motion)
+  motionRef.current = motion
+  const speedRef = useRef(0)
+  speedRef.current = frame?.groundSpeed ?? 0
   const framed = useRef('')
   const [chase, setChase] = useState(false)
-  const [tactical, setTactical] = useState(false)
+  // The operator's basemap choice is remembered per vehicle class; the profile's default
+  // (tactical with roads and footprints for ground vehicles, imagery for aircraft) applies
+  // until they change it.
+  const basemapKey = `fortis.basemap.${profile.domain}`
+  const [basemap, setBasemapState] = useState<Basemap>(() => {
+    try {
+      const stored = window.localStorage.getItem(basemapKey) as Basemap | null
+      if (stored === 'satellite' || stored === 'street' || stored === 'tactical') return stored
+    } catch {
+      /* preference only */
+    }
+    return basemapProp
+  })
+  const setBasemap = (next: Basemap | ((b: Basemap) => Basemap)) =>
+    setBasemapState(b => {
+      const value = typeof next === 'function' ? next(b) : next
+      try {
+        window.localStorage.setItem(basemapKey, value)
+      } catch {
+        /* preference only */
+      }
+      return value
+    })
+  const tactical = basemap === 'tactical'
+  const streetLayer = useRef<ImageryLayer | null>(null)
+  const bordersLayer = useRef<ImageryLayer | null>(null)
+  const [borders, setBorders] = useState(true)
   const view3dRef = useRef(view3d)
   view3dRef.current = view3d
   const imagery = useRef<ImageryLayer | null>(null)
@@ -155,7 +227,7 @@ export function FlightView3D({
     range: number
     target: { pos: Cartesian3; heading: number } | null
     cam: { pos: Cartesian3; heading: number } | null
-  }>({ chase: false, range: 160, target: null, cam: null })
+  }>({ chase: false, range: air ? 160 : 70, target: null, cam: null })
   const sensor = useRef<{ footprint: Entity; edges: Entity[]; task: Entity; pill: Entity } | null>(
     null,
   )
@@ -209,6 +281,21 @@ export function FlightView3D({
     layer.brightness = 0.8
     layer.saturation = 0.8
     imagery.current = layer
+    const streets = viewer.imageryLayers.addImageryProvider(
+      new UrlTemplateImageryProvider({
+        url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+        credit: 'Esri World Street Map',
+        maximumLevel: 19,
+      }),
+    )
+    streets.show = false
+    // Dim the light street cartography so the HUD and route colours still read on top of it.
+    streets.brightness = 0.62
+    streets.saturation = 0.55
+    streets.contrast = 1.05
+    streetLayer.current = streets
+    // Reference overlay on top of every basemap: country borders, regions and place names.
+    bordersLayer.current = addBoundariesLayer(viewer)
     const scene = viewer.scene
     scene.fog.enabled = true
     scene.fog.density = 0.00045
@@ -223,7 +310,7 @@ export function FlightView3D({
     viewerRef.current = viewer
     const canvas = viewer.scene.canvas
     let last = performance.now()
-    const PITCH = CesiumMath.toRadians(-26)
+    const PITCH = CesiumMath.toRadians(air ? -26 : -16)
     const onPreRender = () => {
       const now = performance.now()
       const dt = Math.min((now - last) / 1000, 0.25)
@@ -231,17 +318,24 @@ export function FlightView3D({
       // Rotors: spool toward the commanded rpm (fast up, slower coast down), then advance each
       // blade by its own direction. The visual rate is scaled so blades stay readable at 60 fps.
       const r = rotor.current
-      const mode = rotorsRef.current ?? (spin.current ? 'run' : 'off')
-      r.target = mode === 'run' ? 4800 : mode === 'idle' ? 1100 : 0
-      const rate = r.target > r.rpm ? 2600 : 900
-      r.rpm =
-        r.target > r.rpm
-          ? Math.min(r.target, r.rpm + rate * dt)
-          : Math.max(r.target, r.rpm - rate * dt)
-      const revPerSec = r.rpm / 600
-      for (let i = 0; i < 4; i++)
-        r.angle[i] =
-          (r.angle[i] + ROTOR_DIRECTIONS[i] * revPerSec * 2 * Math.PI * dt) % (2 * Math.PI)
+      const mode = motionRef.current ?? (spin.current ? 'run' : 'off')
+      if (air) {
+        r.target = mode === 'run' ? 4800 : mode === 'idle' ? 1100 : 0
+        const rate = r.target > r.rpm ? 2600 : 900
+        r.rpm =
+          r.target > r.rpm
+            ? Math.min(r.target, r.rpm + rate * dt)
+            : Math.max(r.target, r.rpm - rate * dt)
+        const revPerSec = r.rpm / 600
+        for (let i = 0; i < model.spinNodes.length; i++)
+          r.angle[i] =
+            (r.angle[i] + model.directions[i] * revPerSec * 2 * Math.PI * dt) % (2 * Math.PI)
+      } else {
+        // Wheels: angular rate from ground speed over the rendered wheel radius.
+        const omega = speedRef.current / (0.23 * model.scale)
+        for (let i = 0; i < model.spinNodes.length; i++)
+          r.angle[i] = (r.angle[i] - omega * dt) % (2 * Math.PI)
+      }
       const f = follow.current
       if (!f.chase || !f.target) return
       const ease = (rate: number) => 1 - Math.exp(-dt * rate)
@@ -270,6 +364,19 @@ export function FlightView3D({
       drawHud(viewer, hudSurface.current, hudCards.current, hudTarget.current)
     }
     viewer.scene.postRender.addEventListener(onPostRender)
+    const reportView = () => {
+      const rect = viewer.camera.computeViewRectangle(viewer.scene.globe.ellipsoid)
+      if (!rect || !onViewRef.current) return
+      onViewRef.current({
+        west: CesiumMath.toDegrees(rect.west),
+        south: CesiumMath.toDegrees(rect.south),
+        east: CesiumMath.toDegrees(rect.east),
+        north: CesiumMath.toDegrees(rect.north),
+        height: viewer.camera.positionCartographic.height,
+      })
+    }
+    viewer.camera.moveEnd.addEventListener(reportView)
+    const firstView = window.setTimeout(reportView, 800)
     const onWheel = (event: WheelEvent) => {
       if (!follow.current.chase) return
       event.preventDefault()
@@ -344,6 +451,8 @@ export function FlightView3D({
       canvas.removeEventListener('wheel', onWheel)
       if (!viewer.isDestroyed()) viewer.scene.preRender.removeEventListener(onPreRender)
       if (!viewer.isDestroyed()) viewer.scene.postRender.removeEventListener(onPostRender)
+      if (!viewer.isDestroyed()) viewer.camera.moveEnd.removeEventListener(reportView)
+      window.clearTimeout(firstView)
       input.destroy()
       viewerRef.current = null
       framed.current = ''
@@ -370,7 +479,8 @@ export function FlightView3D({
       })
 
     areas.forEach(({ points, kind }) => {
-      const color = kind === 'area' ? TEAL : AMBER
+      const building = kind === 'building'
+      const color = kind === 'area' ? TEAL : building ? BUILDING : AMBER
       if (points.length === 2) {
         viewer.entities.add({
           polyline: {
@@ -384,8 +494,36 @@ export function FlightView3D({
       }
       if (points.length < 3) return
       const area = kind === 'area'
-      const top = kind === 'zone' ? ZONE_HEIGHT : Math.max(altitude, 10)
+      const top = building ? 3 : kind === 'zone' ? zoneTop : volumeTop
       const closed = [...points, points[0]]
+      if (building) {
+        // Detected building: a low translucent block with a crisp roof edge, no handles.
+        const ring = closed.flatMap(p => {
+          const g = geo(p)
+          return [g.lng, g.lat]
+        })
+        viewer.entities.add({
+          wall: {
+            positions: Cartesian3.fromDegreesArray(ring),
+            maximumHeights: closed.map(() => top),
+            minimumHeights: closed.map(() => 0.2),
+            material: BUILDING.withAlpha(0.22),
+          },
+        })
+        viewer.entities.add({
+          polyline: {
+            positions: Cartesian3.fromDegreesArrayHeights(
+              closed.flatMap(p => {
+                const g = geo(p)
+                return [g.lng, g.lat, top]
+              }),
+            ),
+            width: 1.5,
+            material: BUILDING.withAlpha(0.9),
+          },
+        })
+        return
+      }
       const edge = (h: number) =>
         Cartesian3.fromDegreesArrayHeights(
           closed.flatMap(p => {
@@ -462,7 +600,7 @@ export function FlightView3D({
     if (samples.length > 1) {
       const flat: number[] = samples.flatMap(p => {
         const g = geo(p)
-        return [g.lng, g.lat, altitude]
+        return [g.lng, g.lat, routeHeight]
       })
       // Dynamic positions keep the route on screen while the static batch rebuilds after edits.
       lines.current.route = Cartesian3.fromDegreesArrayHeights(flat)
@@ -470,7 +608,7 @@ export function FlightView3D({
       viewer.entities.add({ polyline: routeLine(() => lines.current.route, MAP_COLORS.plan) })
     }
     const h = geo(home)
-    // Landing pad: concentric rings with an H, the way a helipad reads from the air.
+    // Base marker: concentric rings with an H (helipad) or B (ground base).
     viewer.entities.add({
       position: Cartesian3.fromDegrees(h.lng, h.lat, 0),
       ellipse: {
@@ -495,7 +633,7 @@ export function FlightView3D({
         height: 0,
       },
       label: {
-        text: 'H',
+        text: air ? 'H' : 'B',
         font: '700 15px monospace',
         fillColor: AMBER,
         disableDepthTestDistance: Number.POSITIVE_INFINITY,
@@ -504,7 +642,7 @@ export function FlightView3D({
     viewer.entities.add({
       position: Cartesian3.fromDegrees(h.lng, h.lat, 0),
       label: {
-        text: 'HOME',
+        text: air ? 'HOME' : 'BASE',
         font: '600 10px monospace',
         fillColor: AMBER,
         pixelOffset: new Cartesian2(0, -24),
@@ -530,6 +668,47 @@ export function FlightView3D({
     }
     for (let x = 0; x <= 1000; x += step) line({ x, y: 0 }, { x, y: 700 })
     for (let y = 0; y <= 700; y += step) line({ x: 0, y }, { x: 1000, y })
+
+    if (network) {
+      // Street network the ground vehicle routes on, and every building footprint we know of.
+      network.roads.forEach(({ points }) => {
+        if (points.length < 2) return
+        viewer.entities.add({
+          polyline: {
+            positions: Cartesian3.fromDegreesArrayHeights(
+              points.flatMap(p => {
+                const g = geo(p)
+                return [g.lng, g.lat, 0.3]
+              }),
+            ),
+            width: 2.2,
+            material: new PolylineOutlineMaterialProperty({
+              color: ROAD.withAlpha(0.8),
+              outlineColor: Color.BLACK.withAlpha(0.6),
+              outlineWidth: 1,
+            }),
+          },
+        })
+      })
+      const byDistance = [...network.buildings]
+        .map(b => ({ b, d: distanceToHome(b, home) }))
+        .sort((p, q) => p.d - q.d)
+        .slice(0, MAX_FOOTPRINTS)
+      byDistance.forEach(({ b }) => {
+        viewer.entities.add({
+          polyline: {
+            positions: Cartesian3.fromDegreesArrayHeights(
+              [...b, b[0]].flatMap(p => {
+                const g = geo(p)
+                return [g.lng, g.lat, 0.25]
+              }),
+            ),
+            width: 1.2,
+            material: FOOTPRINT.withAlpha(0.55),
+          },
+        })
+      })
+    }
 
     // Completed part of the flight: the same line in the flown colour.
     trailEntity.current = viewer.entities.add({
@@ -598,40 +777,41 @@ export function FlightView3D({
       viewFrom: new ConstantProperty(new Cartesian3(0, -320, 200)) as never,
       orientation: new CallbackProperty(() => pose.current.orientation, false) as never,
       model: {
-        uri: DRONE_MODEL_URI,
-        scale: 5,
-        minimumPixelSize: 44,
+        uri: model.uri,
+        scale: model.scale,
+        minimumPixelSize: model.minimumPixelSize,
         maximumScale: 60,
         shadows: ShadowMode.DISABLED,
         runAnimations: false,
-        nodeTransformations: Object.fromEntries(
-          [0, 1, 2, 3].flatMap(i => [
-            [
-              `rotor${i}`,
-              new CallbackProperty(
-                () =>
-                  new TranslationRotationScale(
-                    Cartesian3.ZERO,
-                    Quaternion.fromAxisAngle(Cartesian3.UNIT_Y, rotor.current.angle[i]),
-                  ),
-                false,
-              ),
-            ],
-            [
-              `disc${i}`,
-              new CallbackProperty(() => {
-                // Blur disc only reads once the blades are too fast to follow.
-                const k = Math.min(Math.max((rotor.current.rpm - 1500) / 2500, 0), 1)
-                const sc = 1 + k * 999
-                return new TranslationRotationScale(
+        nodeTransformations: Object.fromEntries([
+          ...model.spinNodes.map((name, i) => [
+            name,
+            new CallbackProperty(
+              () =>
+                new TranslationRotationScale(
                   Cartesian3.ZERO,
-                  Quaternion.IDENTITY,
-                  new Cartesian3(sc, 1, sc),
-                )
-              }, false),
-            ],
+                  Quaternion.fromAxisAngle(
+                    model.spinAxis === 'y' ? Cartesian3.UNIT_Y : Cartesian3.UNIT_Z,
+                    rotor.current.angle[i],
+                  ),
+                ),
+              false,
+            ),
           ]),
-        ) as never,
+          ...model.discNodes.map(name => [
+            name,
+            new CallbackProperty(() => {
+              // Blur disc only reads once the blades are too fast to follow.
+              const k = Math.min(Math.max((rotor.current.rpm - 1500) / 2500, 0), 1)
+              const sc = 1 + k * 999
+              return new TranslationRotationScale(
+                Cartesian3.ZERO,
+                Quaternion.IDENTITY,
+                new Cartesian3(sc, 1, sc),
+              )
+            }, false),
+          ]),
+        ]) as never,
       },
       label: {
         text: callsign,
@@ -688,7 +868,12 @@ export function FlightView3D({
     })
     sensor.current = { footprint, edges, task, pill }
 
-    if (framed.current !== 'done') {
+    if (fitRoute && pathKey && fittedFor.current !== pathKey && lines.current.route.length > 1) {
+      // A loaded plan is framed whole, so the operator sees the route before anything moves.
+      fittedFor.current = pathKey
+      framed.current = 'done'
+      fitToRoute(viewer, lines.current.route, view3dRef.current)
+    } else if (framed.current !== 'done') {
       // Initial view is always the home position: top-down in 2D, a tilted look from the south
       // in 3D so HOME sits in the lower third with the mission area ahead of it.
       framed.current = 'done'
@@ -706,7 +891,7 @@ export function FlightView3D({
       )
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pathKey, altitude, areas, metersPerUnit, originKey])
+  }, [pathKey, altitude, areas, metersPerUnit, originKey, network])
 
   useEffect(() => {
     const viewer = viewerRef.current
@@ -718,19 +903,19 @@ export function FlightView3D({
 
   const phase = frame?.phase
   useEffect(() => {
-    if (phase === 'climb' && view3dRef.current) setChase(true)
+    if (phase === 'outbound' && view3dRef.current) setChase(true)
   }, [phase])
 
   useEffect(() => {
     const e = drone.current
     if (!e || !frame) return
     const g = geo(frame.position)
-    const airborne = frame.altitude > 0 || frame.groundSpeed > 0
-    spin.current = airborne || (frame.phase !== 'standby' && frame.phase !== 'landed')
+    const airborne = air && (frame.altitude > 0 || frame.groundSpeed > 0)
+    spin.current = airborne || (frame.phase !== 'standby' && frame.phase !== 'complete')
     // Hover bob and a faint airframe vibration keep the aircraft alive even when holding.
     const t = performance.now()
     const bob = airborne ? 0.35 * Math.sin(t / 420) : 0
-    const alt = Math.max(frame.altitude, 2) + bob
+    const alt = air ? Math.max(frame.altitude, 2) + bob : 0.4
     const pos = Cartesian3.fromDegrees(g.lng, g.lat, alt)
     e.position = new ConstantProperty(pos) as never
     follow.current.target = { pos, heading: CesiumMath.toRadians(frame.heading) }
@@ -749,7 +934,7 @@ export function FlightView3D({
         Cartesian3.fromDegrees(g.lng, g.lat, 0.3),
       ) as never
       if (shadow.current.billboard) {
-        const size = 8 + alt * 0.28
+        const size = air ? 8 + alt * 0.28 : 9
         shadow.current.billboard.width = new ConstantProperty(size) as never
         shadow.current.billboard.height = new ConstantProperty(size) as never
       }
@@ -764,21 +949,37 @@ export function FlightView3D({
         const n = Math.cos(hd) * fwd - Math.sin(hd) * side
         return Cartesian3.fromDegrees(g.lng + e / mLng, g.lat + n / mLat, 0)
       }
-      // Perspective footprint: a tilted camera sees a trapezoid, nadir sees a square.
-      const tilt = Math.min(Math.max(90 + (gimbal?.pitch ?? -90), 0), SENSOR_MAX_TILT)
-      const nearA = CesiumMath.toRadians(tilt - SENSOR_VFOV / 2)
-      const farA = CesiumMath.toRadians(Math.min(tilt + SENSOR_VFOV / 2, SENSOR_MAX_TILT + 6))
-      const halfW = (angle: number) =>
-        (alt / Math.cos(angle)) * Math.tan(CesiumMath.toRadians(SENSOR_HFOV / 2))
-      const near = alt * Math.tan(nearA)
-      const far = alt * Math.tan(farA)
-      const corners = [
-        at(near, -halfW(nearA)),
-        at(near, halfW(nearA)),
-        at(far, halfW(farA)),
-        at(far, -halfW(farA)),
-      ]
-      aim.current = at(alt * Math.tan(CesiumMath.toRadians(tilt)), 0)
+      if (air) {
+        // Perspective footprint: a tilted camera sees a trapezoid, nadir sees a square.
+        const tilt = Math.min(Math.max(90 + (gimbal?.pitch ?? -90), 0), SENSOR_MAX_TILT)
+        const nearA = CesiumMath.toRadians(tilt - SENSOR_VFOV / 2)
+        const farA = CesiumMath.toRadians(Math.min(tilt + SENSOR_VFOV / 2, SENSOR_MAX_TILT + 6))
+        const halfW = (angle: number) =>
+          (alt / Math.cos(angle)) * Math.tan(CesiumMath.toRadians(SENSOR_HFOV / 2))
+        const near = alt * Math.tan(nearA)
+        const far = alt * Math.tan(farA)
+        const corners = [
+          at(near, -halfW(nearA)),
+          at(near, halfW(nearA)),
+          at(far, halfW(farA)),
+          at(far, -halfW(farA)),
+        ]
+        aim.current = at(alt * Math.tan(CesiumMath.toRadians(tilt)), 0)
+        lines.current.outline = [...corners, corners[0]]
+        lines.current.edges = corners.map(c => [pos, c])
+      } else {
+        // Forward sensor fan on the ground: a 100° lidar/sonar wedge, 30 m deep.
+        const reachM = 30
+        const arc: Cartesian3[] = []
+        for (let a = -50; a <= 50; a += 10) {
+          const rad = CesiumMath.toRadians(a)
+          arc.push(at(Math.cos(rad) * reachM, Math.sin(rad) * reachM))
+        }
+        const origin = at(0.6, 0)
+        lines.current.outline = [origin, ...arc, origin]
+        lines.current.edges = [[], [], [], []]
+        aim.current = at(12, 0)
+      }
       // Velocity vector: a short line ahead of the nose at flight level.
       const hv = CesiumMath.toRadians(frame.heading)
       const reach = frame.groundSpeed > 0 ? 18 + frame.groundSpeed * 1.5 : 0
@@ -792,8 +993,6 @@ export function FlightView3D({
             ),
           ]
         : []
-      lines.current.outline = [...corners, corners[0]]
-      lines.current.edges = corners.map(c => [pos, c])
       const hg = geo(home)
       const dx = frame.position.x - home.x
       const dy = frame.position.y - home.y
@@ -811,28 +1010,26 @@ export function FlightView3D({
       altLabel.current.position = new ConstantProperty(
         Cartesian3.fromDegrees(g.lng, g.lat, alt / 2),
       ) as never
-      if (altLabel.current.label)
+      if (altLabel.current.label) {
         altLabel.current.label.text = new ConstantProperty(`${Math.round(alt)} m`) as never
+        altLabel.current.label.show = new ConstantProperty(air) as never
+      }
     }
-    lines.current.stem = [Cartesian3.fromDegrees(g.lng, g.lat, 0), pos]
+    lines.current.stem = air ? [Cartesian3.fromDegrees(g.lng, g.lat, 0), pos] : []
     if (hud) {
-      const ft = Math.round(frame.altitude * 3.28084)
-      const kts = Math.round(frame.groundSpeed * 1.944)
       hudTarget.current = {
         position: pos,
-        title: [callsign, `${ft} ft`, frame.groundSpeed > 0 ? `${kts} kts` : '']
-          .filter(Boolean)
-          .join(' · '),
+        title: profile.hudTitle(frame, callsign),
         details: hud.details,
       }
     } else hudTarget.current = null
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [frame, pathKey, altitude, areas, metersPerUnit, gimbal, hud, callsign, originKey])
+  }, [frame, pathKey, altitude, areas, metersPerUnit, gimbal, hud, callsign, originKey, profile])
 
   useEffect(() => {
     lines.current.trail = trail.map(p => {
       const g = geo(p)
-      return Cartesian3.fromDegrees(g.lng, g.lat, altitude + 1.5)
+      return Cartesian3.fromDegrees(g.lng, g.lat, air ? altitude + 1.5 : 1)
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trail, pathKey, altitude, areas, metersPerUnit, originKey])
@@ -849,7 +1046,7 @@ export function FlightView3D({
       const g = toGeo(h.point, metersPerUnit)
       const zone = h.kind === 'zone'
       const color = zone ? AMBER : TEAL
-      const top = zone ? ZONE_HEIGHT : Math.max(altitude, 10)
+      const top = zone ? zoneTop : handleTop
       const id = `handle:${h.kind}:${h.index}:${h.zone ?? ''}`
       const label =
         h.kind === 'wp'
@@ -938,12 +1135,19 @@ export function FlightView3D({
     const layer = imagery.current
     const viewer = viewerRef.current
     if (!layer || !viewer) return
+    const street = basemap === 'street'
+    layer.show = !street
+    if (streetLayer.current) streetLayer.current.show = street
     layer.brightness = tactical ? 0.5 : 0.8
     layer.contrast = tactical ? 1.3 : 1
     layer.saturation = tactical ? 0.08 : 0.8
     layer.hue = tactical ? 3.7 : 0
     viewer.scene.globe.baseColor = Color.fromCssColorString(tactical ? '#081c2c' : '#0a1418')
-  }, [tactical])
+  }, [basemap, tactical])
+
+  useEffect(() => {
+    if (bordersLayer.current) bordersLayer.current.show = borders
+  }, [borders])
 
   const modeReady = useRef(false)
   useEffect(() => {
@@ -994,8 +1198,34 @@ export function FlightView3D({
             {chase ? 'FREE CAM' : 'CHASE CAM'}
           </button>
         )}
-        <button className={tactical ? 'on' : ''} onClick={() => setTactical(t => !t)}>
-          {tactical ? 'TACTICAL' : 'SATELLITE'}
+        <button
+          className={basemap !== 'satellite' ? 'on' : ''}
+          title="Cycle basemap"
+          onClick={() =>
+            setBasemap(b =>
+              b === 'satellite' ? 'street' : b === 'street' ? 'tactical' : 'satellite',
+            )
+          }
+        >
+          {basemap.toUpperCase()}
+        </button>
+        <button
+          title="Frame the planned route"
+          disabled={!pathKey}
+          onClick={() => {
+            const viewer = viewerRef.current
+            if (viewer && lines.current.route.length > 1)
+              fitToRoute(viewer, lines.current.route, view3d)
+          }}
+        >
+          FIT ROUTE
+        </button>
+        <button
+          className={borders ? 'on' : ''}
+          title="Country borders and place names"
+          onClick={() => setBorders(b => !b)}
+        >
+          BORDERS
         </button>
         <button
           onClick={() =>

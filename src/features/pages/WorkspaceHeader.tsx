@@ -1,15 +1,17 @@
 import { ArrowLeft, Battery, Route, Video, Wifi } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
-import { StatusBadge, TypeIcon } from '../../components/common'
+import { StatusBadge, TypeIcon, type BadgeTone } from '../../components/common'
 import type { Vehicle } from '../../types/domain'
+import type { VehicleProfile } from '../vehicles/vehicleProfile'
 
 /**
- * One header for every vehicle workspace (Live Flight, Mission Planning): identity on the left,
- * workspace tabs in the middle, the vehicle's health cluster on the right.
+ * One header for every vehicle workspace (live operations, mission planning): identity on the
+ * left, workspace tabs in the middle, the vehicle's health cluster on the right.
  */
 export function WorkspaceHeader({
   vehicle,
+  profile,
   active,
   backTo,
   lifecycle,
@@ -18,15 +20,15 @@ export function WorkspaceHeader({
   extra,
 }: {
   vehicle: Vehicle
+  profile: VehicleProfile
   active: 'live' | 'plan'
   backTo: string
-  /** Mission lifecycle word shown as the leading badge (e.g. draft, uploaded, in flight). */
-  lifecycle?: string
+  /** Mission lifecycle badge (e.g. draft, uploaded, in flight, driving). */
+  lifecycle?: { label: string; tone: BadgeTone }
   link: number
   battery: number
   extra?: ReactNode
 }) {
-  const tabs = vehicle.type === 'UAV'
   return (
     <header className="ws-header">
       <div className="ws-identity">
@@ -44,19 +46,19 @@ export function WorkspaceHeader({
           <h1>{vehicle.name}</h1>
         </div>
       </div>
-      {tabs && (
-        <nav className="ws-tabs" aria-label="Workspace">
+      <nav className="ws-tabs" aria-label="Workspace">
+        {profile.live && (
           <Link to={`/vehicles/${vehicle.id}`} className={active === 'live' ? 'active' : ''}>
-            <Video /> Live flight
+            <Video /> {profile.words.liveTab}
           </Link>
-          <Link to={`/missions/${vehicle.id}`} className={active === 'plan' ? 'active' : ''}>
-            <Route /> Mission planning
-          </Link>
-        </nav>
-      )}
+        )}
+        <Link to={`/missions/${vehicle.id}`} className={active === 'plan' ? 'active' : ''}>
+          <Route /> Mission planning
+        </Link>
+      </nav>
       <div className="ws-status">
         {extra}
-        {lifecycle && <StatusBadge status={lifecycle} />}
+        {lifecycle && <StatusBadge status={lifecycle.label} tone={lifecycle.tone} />}
         <StatusBadge status={vehicle.status} />
         <span className="ws-meter" title="Link quality">
           <Wifi size={14} />

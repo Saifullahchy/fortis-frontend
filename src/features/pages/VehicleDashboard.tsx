@@ -6,7 +6,6 @@ import {
   Home,
   MapPin,
   Octagon,
-  PlaneTakeoff,
   Radio,
   ShieldCheck,
 } from 'lucide-react'
@@ -15,28 +14,25 @@ import { useGetVehicleQuery } from '../../services/api/baseApi'
 import { useAppDispatch, useAppSelector } from '../../store/hooks'
 import { actions } from '../../store'
 import { BatteryMeter, LinkMeter, StatusBadge, TypeIcon } from '../../components/common'
-import { DroneOperations } from './DroneOperations'
+import { OperationsWorkspace } from './OperationsWorkspace'
+import { profileFor } from '../vehicles/vehicleProfile'
+
 export function VehicleDashboard() {
   const { id = '' } = useParams(),
     { data: v } = useGetVehicleQuery(id),
     d = useAppDispatch(),
     controlled = useAppSelector(s => s.selection.controlledVehicleId === id)
   if (!v) return <div className="empty">Vehicle not found.</div>
-  if (v.type === 'UAV') return <DroneOperations vehicle={v} />
-  const controls =
-    v.type === 'UUV'
-      ? [
-          [Gauge, 'Dive'],
-          [PlaneTakeoff, 'Surface'],
-          [Octagon, 'Hold'],
-          [Home, 'Abort'],
-        ]
-      : [
-          [Gamepad2, 'Manual'],
-          [Octagon, 'Hold'],
-          [Home, 'Return base'],
-          [MapPin, 'Go to'],
-        ]
+  const profile = profileFor(v.type)
+  if (profile.live) return <OperationsWorkspace vehicle={v} />
+  // Classes without a live workspace yet (underwater) keep the summary dashboard.
+  const controls = [
+    [Gauge, profile.commands.launch],
+    [Octagon, profile.commands.hold],
+    [Home, profile.commands.return],
+    [MapPin, 'Go to'],
+  ] as const
+  const minutesLeft = Math.round(v.battery * (profile.limits.enduranceMin / 100))
   return (
     <div className="page">
       <Link className="back" to="/">
@@ -62,10 +58,10 @@ export function VehicleDashboard() {
             <Camera />
             VIDEO
           </button>
-          <button className="primary">
+          <Link className="primary" to={`/missions/${v.id}`}>
             <MapPin />
-            LOCATE ON MAP
-          </button>
+            PLAN MISSION
+          </Link>
         </div>
       </div>
       <div className="dash-grid">
@@ -76,7 +72,7 @@ export function VehicleDashboard() {
                 <Gauge />
                 LIVE TELEMETRY
               </div>
-              <span>12.4 HZ</span>
+              <span>{v.status === 'offline' ? 'NO LINK' : '12.4 HZ'}</span>
             </div>
             <div className="big-metrics">
               <div>
@@ -87,11 +83,8 @@ export function VehicleDashboard() {
                 </b>
               </div>
               <div>
-                <label>{v.type === 'UUV' ? 'DEPTH' : 'ALTITUDE'}</label>
-                <b>
-                  {v.type === 'UUV' ? '42' : '318'}
-                  <small>m</small>
-                </b>
+                <label>MODE</label>
+                <b>{v.mode}</b>
               </div>
               <div>
                 <label>HEADING</label>
@@ -113,14 +106,15 @@ export function VehicleDashboard() {
             <div className="section-title">
               <div>
                 <MapPin />
-                POSITION
+                MISSION
               </div>
             </div>
             <div className="position-map">
               <i />
               <span>
-                23.7806° N<br />
-                90.4070° E
+                {v.mission}
+                <br />
+                Last seen {v.lastSeen}
               </span>
             </div>
           </section>
@@ -154,7 +148,7 @@ export function VehicleDashboard() {
             <div className="bar">
               <i style={{ width: `${v.battery}%` }} />
             </div>
-            <small>Estimated 24 minutes remaining</small>
+            <small>Estimated {minutesLeft} minutes remaining</small>
             <hr />
             <label>PRIMARY LINK</label>
             <b>
@@ -187,9 +181,9 @@ export function VehicleDashboard() {
               <>
                 <div className="control-grid">
                   {controls.map(([Icon, label]) => (
-                    <button key={String(label)}>
+                    <button key={label}>
                       <Icon />
-                      {String(label)}
+                      {label}
                     </button>
                   ))}
                 </div>

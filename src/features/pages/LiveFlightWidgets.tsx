@@ -1,6 +1,6 @@
 import { Maximize2, Minimize2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import type { TelemetryFrame } from './useFlightSimulation'
+import type { TelemetryFrame } from './useMissionSimulation'
 import { toGeo } from './MissionHud'
 import { METERS_PER_UNIT } from './missionGeometry'
 
@@ -34,6 +34,7 @@ export function LiveFeed({
   gimbal,
   primary,
   onSwap,
+  caption,
 }: {
   frame: TelemetryFrame
   mode: CameraMode
@@ -41,6 +42,8 @@ export function LiveFeed({
   /** True when the feed fills the stage and the 3D map is the picture-in-picture. */
   primary: boolean
   onSwap: () => void
+  /** Readout for the camera mount, e.g. "GIMBAL -75°" or "MAST +20°". */
+  caption?: string
 }) {
   const [elapsed, setElapsed] = useState(0)
   useEffect(() => {
@@ -89,8 +92,12 @@ export function LiveFeed({
           <i />
         </div>
         <div className="lf-bottom">
-          <span>GIMBAL {gimbal.pitch}°</span>
-          <span>ALT {Math.round(frame.altitude)} m</span>
+          <span>{caption ?? `GIMBAL ${gimbal.pitch}°`}</span>
+          <span>
+            {frame.ground
+              ? `GRADE ${frame.ground.grade.toFixed(0)}%`
+              : `ALT ${Math.round(frame.altitude)} m`}
+          </span>
           <span>{stamp(elapsed)}</span>
         </div>
       </div>
@@ -286,6 +293,183 @@ export function AttitudeIndicator({
         {roll.toFixed(0)}° · {Math.abs(climb) < 0.05 ? '→' : climb > 0 ? '↑' : '↓'}
         {Math.abs(climb).toFixed(1)} m/s
       </b>
+    </div>
+  )
+}
+
+/**
+ * Inclinometer for ground vehicles: a side-on and head-on silhouette that tilt with the terrain,
+ * with the rollover envelope marked. Pitch and roll are the same telemetry an IMU reports.
+ */
+export function Inclinometer({
+  pitch,
+  roll,
+  grade = 0,
+  limit = 25,
+}: {
+  pitch: number
+  roll: number
+  /** Slope along the heading, percent. */
+  grade?: number
+  /** Roll angle at which the warning band starts, degrees. */
+  limit?: number
+}) {
+  const p = clampDeg(pitch, 45)
+  const r = clampDeg(roll, 60)
+  const warn = Math.abs(roll) > limit
+  return (
+    <div
+      className={`inclinometer${warn ? ' warn' : ''}`}
+      role="img"
+      aria-label={`Pitch ${Math.round(pitch)} degrees, roll ${Math.round(roll)} degrees`}
+    >
+      <svg viewBox="-60 -60 120 120">
+        <circle r="48" className="dial" />
+        {/* Roll envelope: safe arc, warning band and the rollover limits. */}
+        {[-limit, limit].map(a => (
+          <line
+            key={a}
+            x1="0"
+            y1="-48"
+            x2="0"
+            y2="-40"
+            transform={`rotate(${a})`}
+            className="limit"
+          />
+        ))}
+        {ROLL_MARKS.filter(m => Math.abs(m) <= 60).map(m => (
+          <line
+            key={m}
+            x1="0"
+            y1="-48"
+            x2="0"
+            y2={m % 30 === 0 ? -43 : -45.5}
+            transform={`rotate(${m})`}
+            className="tick"
+          />
+        ))}
+        {/* Head-on view (upper half): rolls with the vehicle. */}
+        <g transform={`translate(0 -14) rotate(${r})`}>
+          <line x1="-30" x2="30" y1="8" y2="8" className="ground" />
+          <rect x="-13" y="-6" width="26" height="9" rx="1.5" className="body" />
+          <rect x="-16" y="1" width="6" height="7" rx="1" className="wheel" />
+          <rect x="10" y="1" width="6" height="7" rx="1" className="wheel" />
+          <rect x="-2" y="-12" width="4" height="6" className="mast" />
+        </g>
+        {/* Side view (lower half): pitches with the slope. */}
+        <g transform={`translate(0 22) rotate(${-p})`}>
+          <line x1="-30" x2="30" y1="8" y2="8" className="ground" />
+          <rect x="-16" y="-5" width="32" height="8" rx="1.5" className="body" />
+          <rect x="10" y="-9" width="6" height="4" className="mast" />
+          <circle cx="-9" cy="6" r="4" className="wheel" />
+          <circle cx="9" cy="6" r="4" className="wheel" />
+        </g>
+        <circle r="48" fill="none" stroke="#20292e" strokeWidth="4" />
+        <circle r="50" fill="none" stroke="#4a5d69" strokeWidth="1" />
+      </svg>
+      <b>
+        P {pitch >= 0 ? '+' : ''}
+        {pitch.toFixed(0)}° · R {roll >= 0 ? '+' : ''}
+        {roll.toFixed(0)}° · {grade >= 0 ? '↗' : '↘'}
+        {Math.abs(grade).toFixed(0)}%
+      </b>
+    </div>
+  )
+}
+
+const KEYS: Record<string, [number, number]> = {
+  w: [1, 0],
+  arrowup: [1, 0],
+  s: [-1, 0],
+  arrowdown: [-1, 0],
+  a: [0, -1],
+  arrowleft: [0, -1],
+  d: [0, 1],
+  arrowright: [0, 1],
+}
+
+/**
+ * Teleoperation pad: hold a direction (pointer or WASD / arrows) to drive; release to stop.
+ * It is a dead-man control, so a dropped pointer or a blurred window halts the vehicle.
+ */
+export function TeleopPad({
+  active,
+  onDrive,
+}: {
+  active: boolean
+  onDrive: (input: { throttle: number; steer: number }) => void
+}) {
+  const [held, setHeld] = useState<Set<string>>(new Set())
+  useEffect(() => {
+    if (!active) return
+    let throttle = 0
+    let steer = 0
+    held.forEach(k => {
+      const [t, s] = KEYS[k] ?? [0, 0]
+      throttle += t
+      steer += s
+    })
+    onDrive({
+      throttle: Math.max(-1, Math.min(1, throttle)),
+      steer: Math.max(-1, Math.min(1, steer)),
+    })
+  }, [held, active, onDrive])
+  useEffect(() => {
+    if (!active) return
+    const down = (e: KeyboardEvent) => {
+      const k = e.key.toLowerCase()
+      if (!KEYS[k] || (e.target instanceof Element && e.target.closest('input, textarea'))) return
+      e.preventDefault()
+      setHeld(h => (h.has(k) ? h : new Set(h).add(k)))
+    }
+    const up = (e: KeyboardEvent) => {
+      const k = e.key.toLowerCase()
+      if (!KEYS[k]) return
+      setHeld(h => {
+        if (!h.has(k)) return h
+        const next = new Set(h)
+        next.delete(k)
+        return next
+      })
+    }
+    const release = () => setHeld(new Set())
+    window.addEventListener('keydown', down)
+    window.addEventListener('keyup', up)
+    window.addEventListener('blur', release)
+    return () => {
+      window.removeEventListener('keydown', down)
+      window.removeEventListener('keyup', up)
+      window.removeEventListener('blur', release)
+      release()
+    }
+  }, [active])
+  const press = (k: string) => () => setHeld(h => new Set(h).add(k))
+  const lift = (k: string) => () =>
+    setHeld(h => {
+      const next = new Set(h)
+      next.delete(k)
+      return next
+    })
+  const btn = (k: string, label: string) => (
+    <button
+      key={k}
+      className={held.has(k) ? 'on' : ''}
+      disabled={!active}
+      onPointerDown={press(k)}
+      onPointerUp={lift(k)}
+      onPointerLeave={lift(k)}
+      onPointerCancel={lift(k)}
+    >
+      {label}
+    </button>
+  )
+  return (
+    <div className={`teleop-pad${active ? ' active' : ''}`}>
+      {btn('w', '▲')}
+      {btn('a', '◀')}
+      <i>{active ? 'HOLD TO DRIVE' : 'TAKE CONTROL'}</i>
+      {btn('d', '▶')}
+      {btn('s', '▼')}
     </div>
   )
 }

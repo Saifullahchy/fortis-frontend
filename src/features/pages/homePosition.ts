@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 import { setMissionOrigin } from './MissionHud'
 import { HOME, METERS_PER_UNIT } from './missionGeometry'
 
@@ -89,4 +89,60 @@ export function startDeviceHomeTracking() {
     { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 },
   )
   return () => navigator.geolocation.clearWatch(id)
+}
+
+export interface HomePlace {
+  /** Nearest city or town, when known. */
+  city?: string
+  region?: string
+  country?: string
+  countryCode?: string
+}
+
+const places = new Map<string, Promise<HomePlace>>()
+
+/** Reverse-geocodes a position to city / region / country (OpenStreetMap Nominatim). */
+function lookupPlace(lat: number, lng: number): Promise<HomePlace> {
+  const key = `${lat.toFixed(2)},${lng.toFixed(2)}`
+  let pending = places.get(key)
+  if (!pending) {
+    const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=10&lat=${lat}&lon=${lng}`
+    pending = fetch(url, { headers: { Accept: 'application/json' } })
+      .then(res => (res.ok ? res.json() : Promise.reject(new Error(String(res.status)))))
+      .then((json: { address?: Record<string, string> }) => {
+        const a = json.address ?? {}
+        return {
+          city: a.city ?? a.town ?? a.village ?? a.municipality ?? a.county,
+          region: a.state ?? a.region ?? a.state_district,
+          country: a.country,
+          countryCode: a.country_code?.toUpperCase(),
+        }
+      })
+    places.set(key, pending)
+    pending.catch(() => places.delete(key))
+  }
+  return pending
+}
+
+/** Where HOME is in words: "Dhaka · Bangladesh". Resolves lazily; null until known. */
+export function useHomePlace(): HomePlace | null {
+  const home = useHome()
+  const [place, setPlace] = useState<HomePlace | null>(null)
+  useEffect(() => {
+    let live = true
+    lookupPlace(home.lat, home.lng).then(
+      p => live && setPlace(p),
+      () => live && setPlace({}),
+    )
+    return () => {
+      live = false
+    }
+  }, [home.key, home.lat, home.lng])
+  return place
+}
+
+export const placeLabel = (place: HomePlace | null, fallback = 'HOME SECTOR') => {
+  if (!place) return 'LOCATING…'
+  const parts = [place.city, place.country].filter(Boolean)
+  return parts.length ? parts.join(' · ').toUpperCase() : fallback
 }

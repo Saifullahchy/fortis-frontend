@@ -135,6 +135,18 @@ export const missions: Mission[] = [
     ],
   },
   {
+    id: 'MSN-211',
+    name: 'Perimeter',
+    vehicleId: 'UGV-001',
+    status: 'executing',
+    progress: 41,
+    waypoints: [
+      { id: 'WP-01', latitude: 23.8, longitude: 90.36 },
+      { id: 'WP-02', latitude: 23.802, longitude: 90.362 },
+      { id: 'WP-03', latitude: 23.801, longitude: 90.364 },
+    ],
+  },
+  {
     id: 'MSN-198',
     name: 'Harbor Watch',
     vehicleId: 'USV-001',

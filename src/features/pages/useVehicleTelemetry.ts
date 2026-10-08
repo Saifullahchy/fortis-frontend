@@ -1,6 +1,7 @@
-import { useFlightSimulation, type TelemetrySource } from './useFlightSimulation'
+import { useMissionSimulation, type TelemetrySource } from './useMissionSimulation'
 import { METERS_PER_UNIT } from './missionGeometry'
 import type { LivePlan } from './missionPlan'
+import type { VehicleProfile } from '../vehicles/vehicleProfile'
 
 export interface VehicleTelemetry extends TelemetrySource {
   source: 'simulation' | 'stream'
@@ -14,13 +15,15 @@ export interface VehicleTelemetry extends TelemetrySource {
  */
 export function useVehicleTelemetry(
   vehicleId: string,
+  profile: VehicleProfile,
   plan: LivePlan | null,
   batteryStart: number,
   ready: boolean,
 ): VehicleTelemetry {
-  const sim = useFlightSimulation({
+  const sim = useMissionSimulation({
     vehicleId,
     enabled: ready,
+    domain: profile.domain,
     pathKey: plan?.path ?? '',
     metersPerUnit: METERS_PER_UNIT,
     cruiseSpeed: plan?.speed ?? 0,
@@ -28,6 +31,10 @@ export function useVehicleTelemetry(
     transitUnits: plan?.transitUnits ?? [0, 0],
     batteryStart,
     waypointCount: plan?.waypointCount ?? 0,
+    stopUnits: plan?.stopUnits ?? [],
+    dwellSeconds: plan?.dwellSeconds ?? 0,
+    acceptMeters: plan?.acceptMeters,
+    enduranceMin: profile.limits.enduranceMin,
   })
   return { ...sim, source: 'simulation' }
 }

@@ -2,7 +2,11 @@ import { Activity, PanelLeftClose, PanelLeftOpen, SlidersHorizontal, Target } fr
 import { Path, Broadcast } from '@phosphor-icons/react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { useEffect, useState, type ReactNode } from 'react'
-import { startDeviceHomeTracking } from '../../features/pages/homePosition'
+import {
+  placeLabel,
+  startDeviceHomeTracking,
+  useHomePlace,
+} from '../../features/pages/homePosition'
 
 const items = [
   ['/', 'Fleet', Broadcast],
@@ -25,6 +29,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const { pathname } = useLocation()
   const [preference, setPreference] = useState<boolean | null>(readPreference)
   const [collapsed, setCollapsed] = useState(() => readPreference() ?? WORKSPACE.test(pathname))
+  const place = useHomePlace()
 
   useEffect(() => {
     if (preference === null) setCollapsed(WORKSPACE.test(pathname))
@@ -88,7 +93,8 @@ export function AppShell({ children }: { children: ReactNode }) {
       <main className="main">
         <header className="topbar">
           <div className="crumb">
-            UNIFIED OPERATIONS <span>/</span> DHAKA SECTOR
+            UNIFIED OPERATIONS <span>/</span>{' '}
+            <em title={place?.region ? `${place.region}` : undefined}>{placeLabel(place)}</em>
           </div>
           <div className="top-stats">
             <span>

@@ -4207,12 +4207,12 @@ body {
   letter-spacing: 1.2px;
   color: var(--text-3);
 }
-.sim-phase.climb,
+.sim-phase.outbound,
 .sim-phase.mission,
 .sim-phase.return {
   color: #2fe0c0;
 }
-.sim-phase.landed {
+.sim-phase.complete {
   color: #f0b35a;
 }
 .sim-rates {
@@ -5275,11 +5275,12 @@ a.mp-btn {
 .drone-primary-view .flight-3d-tools {
   top: 110px;
 }
-.live-chip.stage-flying i,
+.live-chip.stage-active i,
 .live-chip.stage-returning i {
   background: #2fe0c0;
 }
 .live-chip.stage-holding i,
+.live-chip.stage-manual i,
 .live-chip.stage-armed i {
   background: #f0b35a;
 }
@@ -5298,12 +5299,13 @@ a.mp-btn {
   border-radius: 50%;
   background: #6b787f;
 }
-.flight-state.stage-flying i,
+.flight-state.stage-active i,
 .flight-state.stage-returning i {
   background: #2fe0c0;
   box-shadow: 0 0 8px #2fe0c0;
 }
 .flight-state.stage-holding i,
+.flight-state.stage-manual i,
 .flight-state.stage-armed i {
   background: #f0b35a;
 }
@@ -5923,4 +5925,358 @@ a.mp-btn {
 .drone-primary-view .panel-dock {
   /* Keep the dock clear of the instrument cluster in the bottom-right corner. */
   bottom: 160px;
+}
+
+/* ---- lifecycle badge tones (profile-driven stage words) ---- */
+.badge.tone-ok i {
+  background: #2fe0c0;
+}
+.badge.tone-warn i {
+  background: #f0b35a;
+}
+.badge.tone-bad i {
+  background: #ff4d4d;
+}
+.badge.tone-muted i {
+  background: #6b787f;
+}
+
+/* ---- inclinometer (ground vehicles) ---- */
+.inclinometer {
+  position: relative;
+  width: 120px;
+  height: 120px;
+  border: 1px solid #4a5d69;
+  border-radius: 50%;
+  background: #0a131bd9;
+  display: grid;
+  place-items: center;
+}
+.inclinometer svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.inclinometer .dial {
+  fill: #0c1a22;
+}
+.inclinometer .tick {
+  stroke: #8da0ab;
+  stroke-width: 1;
+}
+.inclinometer .limit {
+  stroke: #ff7a7a;
+  stroke-width: 2;
+}
+.inclinometer .ground {
+  stroke: #6f8591;
+  stroke-width: 1;
+  stroke-dasharray: 3 2;
+}
+.inclinometer .body {
+  fill: #2fe0c0;
+}
+.inclinometer .wheel {
+  fill: #dbe3e7;
+}
+.inclinometer .mast {
+  fill: #9bb3bf;
+}
+.inclinometer.warn .body {
+  fill: #ff7a7a;
+}
+.inclinometer b {
+  position: absolute;
+  left: 50%;
+  bottom: -18px;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font: 600 10px var(--title);
+  letter-spacing: 0.6px;
+  color: #dbe3e7;
+  background: #0a141cdc;
+  padding: 2px 6px;
+  border: 1px solid #33444e;
+}
+.inclinometer.warn b {
+  color: #ff7a7a;
+  border-color: #7a3030;
+}
+
+/* ---- teleoperation pad ---- */
+.teleop-pad {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-rows: 36px 36px 36px;
+  gap: 4px;
+  margin: 8px 0 6px;
+}
+.teleop-pad button {
+  border: 1px solid #34454f;
+  background: #121c24;
+  color: #dbe3e7;
+  font-size: 13px;
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+}
+.teleop-pad button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.teleop-pad button.on {
+  background: #2fe0c0;
+  border-color: #2fe0c0;
+  color: #06201c;
+}
+.teleop-pad button:nth-child(1) {
+  grid-column: 2;
+  grid-row: 1;
+}
+.teleop-pad button:nth-child(2) {
+  grid-column: 1;
+  grid-row: 2;
+}
+.teleop-pad i {
+  grid-column: 2;
+  grid-row: 2;
+  display: grid;
+  place-items: center;
+  font: 600 8px var(--title);
+  letter-spacing: 0.8px;
+  color: var(--text-3);
+  text-align: center;
+  border: 1px dashed #34454f;
+}
+.teleop-pad.active i {
+  color: #2fe0c0;
+  border-color: #1f5c52;
+}
+.teleop-pad button:nth-child(4) {
+  grid-column: 3;
+  grid-row: 2;
+}
+.teleop-pad button:nth-child(5) {
+  grid-column: 2;
+  grid-row: 3;
+}
+
+/* ---- mission timeline ---- */
+.timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.timeline li {
+  display: grid;
+  grid-template-columns: 12px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid #1c2a33;
+  font-size: 11px;
+}
+.timeline li:last-child {
+  border-bottom: 0;
+}
+.timeline li i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #6b787f;
+}
+.timeline li.tone-ok i {
+  background: #2fe0c0;
+}
+.timeline li.tone-warn i {
+  background: #f0b35a;
+}
+.timeline li.tone-bad i {
+  background: #ff4d4d;
+}
+.timeline li b {
+  font: 600 11px var(--title);
+  letter-spacing: 0.8px;
+  color: #f5f7f8;
+}
+.timeline li small {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- mission board ---- */
+.board-summary {
+  grid-template-columns: auto auto auto auto;
+  column-gap: 14px;
+}
+.board-summary b {
+  font-size: 20px;
+}
+.mission-board {
+  max-width: 1180px;
+  margin: 0 auto 28px;
+  border: 1px solid var(--border);
+  background: #0e171f;
+  overflow-x: auto;
+}
+.mission-board table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.mission-board th {
+  text-align: left;
+  padding: 10px 14px;
+  font: 600 10px var(--title);
+  letter-spacing: 1.2px;
+  color: var(--text-3);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.mission-board td {
+  padding: 10px 14px;
+  border-bottom: 1px solid #1a2630;
+  color: #dbe3e7;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.mission-board tr:last-child td {
+  border-bottom: 0;
+}
+.mission-board tr.live td:first-child {
+  box-shadow: inset 3px 0 0 #2fe0c0;
+}
+.mission-board tr.empty td {
+  color: var(--text-3);
+  text-align: center;
+  padding: 26px;
+}
+.mission-board td b {
+  display: block;
+  font: 600 13px var(--title);
+  color: #f5f7f8;
+}
+.mission-board td small {
+  color: var(--text-3);
+  font-size: 11px;
+}
+.board-vehicle {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.board-vehicle > span {
+  display: grid;
+}
+.board-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 120px;
+  font-variant-numeric: tabular-nums;
+}
+.board-progress i {
+  flex: 1;
+  height: 4px;
+  background: #1c2a33;
+  display: block;
+}
+.board-progress i b {
+  display: block;
+  height: 100%;
+  background: #2fe0c0;
+}
+.board-actions a {
+  display: inline-block;
+  padding: 4px 9px;
+  margin-left: 4px;
+  border: 1px solid #34454f;
+  color: #dbe3e7;
+  font: 600 10px var(--title);
+  letter-spacing: 1px;
+  text-decoration: none;
+}
+.board-actions a:hover {
+  border-color: #2fe0c0;
+  color: #2fe0c0;
+}
+.mission-pick-title {
+  max-width: 1180px;
+  margin: 0 auto 12px;
+  font: 600 12px var(--title);
+  letter-spacing: 1.4px;
+  color: var(--text-3);
+}
+
+/* ---- street routing status ---- */
+.street-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  margin-bottom: 8px;
+  border: 1px solid #34454f;
+  font-size: 11px;
+  color: #dbe3e7;
+}
+.street-status i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #6b787f;
+  flex: none;
+}
+.street-status.loading i {
+  background: #f0b35a;
+  animation: pulse 1.2s infinite;
+}
+.street-status.ready i {
+  background: #2fe0c0;
+}
+.street-status.error i {
+  background: #ff4d4d;
+}
+.street-status .mp-btn {
+  margin-left: auto;
+}
+
+.crumb em {
+  font-style: normal;
+  color: #f5f7f8;
+}
+
+/* ---- map data chip (street / building tiles) ---- */
+.street-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-left: 8px;
+  padding: 5px 9px;
+  border: 1px solid #34454f;
+  background: #0c161ee8;
+  font: 600 10px var(--title);
+  letter-spacing: 1px;
+  color: #dbe3e7;
+  white-space: nowrap;
+}
+.street-chip i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #6b787f;
+}
+.street-chip.loading i {
+  background: #f0b35a;
+  animation: pulse 1.2s infinite;
+}
+.street-chip.ready i {
+  background: #2fe0c0;
+}
+.street-chip.error i {
+  background: #ff4d4d;
+}
+.mission-home-chip {
+  display: flex;
+  align-items: center;
 }

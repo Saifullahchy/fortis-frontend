@@ -61,7 +61,7 @@ function segmentsCross(a: Point, b: Point, c: Point, d: Point) {
   )
 }
 
-function pointInPolygon(point: Point, polygon: Point[]) {
+export function pointInPolygon(point: Point, polygon: Point[]) {
   let inside = false
   for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i, i += 1) {
     const a = polygon[i]
@@ -135,7 +135,7 @@ function crossesPolygon(a: Point, b: Point, polygon: Point[]) {
   )
 }
 
-function convexHull(points: Point[]) {
+export function convexHull(points: Point[]) {
   const sorted = [...points].sort((a, b) => a.x - b.x || a.y - b.y)
   if (sorted.length < 3) return sorted
   const build = (list: Point[]) => {
@@ -152,7 +152,7 @@ function convexHull(points: Point[]) {
   return [...build(sorted), ...build([...sorted].reverse())]
 }
 
-function expandPolygon(polygon: Point[], margin: number) {
+export function expandPolygon(polygon: Point[], margin: number) {
   const center = {
     x: polygon.reduce((sum, point) => sum + point.x, 0) / polygon.length,
     y: polygon.reduce((sum, point) => sum + point.y, 0) / polygon.length,
@@ -208,7 +208,7 @@ function freeSegments(top: number, bottom: number, cuts: Array<[number, number]>
   return segments
 }
 
-function detourAll(a: Point, b: Point, hulls: Point[][], depth = 0): Point[] {
+export function detourAll(a: Point, b: Point, hulls: Point[][], depth = 0): Point[] {
   const blocking = hulls
     .filter(hull => crossesPolygon(a, b, hull))
     .sort((p, q) => distance(a, centerOf(p)) - distance(a, centerOf(q)))[0]
@@ -340,6 +340,102 @@ function polylineRoute(points: Point[], repeats = 1): Route {
 export function createPointRoute(points: Point[]) {
   if (!points.length) return null
   return polylineRoute([HOME, ...points, HOME])
+}
+
+/** Closed patrol loop through the points, driven `repeats` times, out from and back to HOME. */
+export function createLoopRoute(points: Point[], repeats: number) {
+  if (points.length < 2) return createPointRoute(points)
+  const lap = [...points, points[0]]
+  const laps = Array.from({ length: Math.max(1, repeats) }, () => lap).flat()
+  return polylineRoute([HOME, ...laps, HOME])
+}
+
+/**
+ * Ground route: out from BASE through the waypoints (looped `repeats` times when `closed`) and
+ * back, steering around every obstacle with `clearance` to spare and rounding each corner to the
+ * vehicle's minimum turning radius. A rover cannot cut across a building the way an aircraft
+ * flies over it, and it cannot pivot on the spot mid-corner at speed.
+ */
+export function createGroundRoute(
+  points: Point[],
+  obstacles: Point[][],
+  options: { closed: boolean; repeats: number; turnRadius: number; clearance: number },
+): Route | null {
+  if (!points.length || (options.closed && points.length < 2)) return null
+  const lap = options.closed ? [...points, points[0]] : points
+  const laps = options.closed
+    ? Array.from({ length: Math.max(1, options.repeats) }, () => lap).flat()
+    : lap
+  const hulls = obstacleHulls(obstacles, options.clearance + options.turnRadius * 0.35)
+  // Insert detour vertices wherever a leg would cross an obstacle. Waypoints are stops where
+  // the vehicle halts and turns in place, so only detour corners are rounded.
+  const chain: ChainNode[] = [{ p: HOME, round: false }]
+  for (const next of [...laps, HOME]) {
+    const from = chain[chain.length - 1].p
+    if (hulls.length) chain.push(...detourAll(from, next, hulls).map(p => ({ p, round: true })))
+    chain.push({ p: next, round: false })
+  }
+  return chainRoute(chain, options.turnRadius)
+}
+
+/** Convex, margin-expanded hulls of obstacle outlines, ready for detour tests. */
+export function obstacleHulls(obstacles: Point[][], margin: number) {
+  return obstacles
+    .filter(zone => zone.length >= 3)
+    .map(zone => expandPolygon(convexHull(zone), margin))
+}
+
+export interface ChainNode {
+  p: Point
+  /** Round this corner to the turning radius; false for stops, where the vehicle turns in place. */
+  round: boolean
+}
+
+/**
+ * Path through a chain of points, rounding the marked corners with arcs of at most `turnRadius`
+ * (shrunk where the adjoining legs are too short). Zero-length legs are dropped.
+ */
+export function chainRoute(chain: ChainNode[], turnRadius: number): Route | null {
+  const nodes = chain.filter((n, i) => i === 0 || distance(n.p, chain[i - 1].p) > 0.5)
+  const pts = nodes.map(n => n.p)
+  if (pts.length < 2) return null
+  let path = `M ${fmt(pts[0])}`
+  let length = 0
+  let cursor = pts[0]
+  for (let i = 1; i < pts.length; i += 1) {
+    const corner = pts[i]
+    const after = pts[i + 1]
+    if (!after) {
+      path += ` L ${fmt(corner)}`
+      length += distance(cursor, corner)
+      break
+    }
+    const d1 = distance(cursor, corner)
+    const d2 = distance(corner, after)
+    const u1 = { x: (corner.x - cursor.x) / d1, y: (corner.y - cursor.y) / d1 }
+    const u2 = { x: (after.x - corner.x) / d2, y: (after.y - corner.y) / d2 }
+    const dot = Math.max(-1, Math.min(1, u1.x * u2.x + u1.y * u2.y))
+    const turn = Math.acos(dot) // 0 = straight on, π = hairpin
+    if (!nodes[i].round || turn < 0.05 || Math.PI - turn < 0.05) {
+      path += ` L ${fmt(corner)}`
+      length += d1
+      cursor = corner
+      continue
+    }
+    const interior = Math.PI - turn
+    // Tangent length for the requested radius, shrunk so the arc fits both legs.
+    const tanHalf = Math.tan(interior / 2)
+    const maxTangent = Math.min(d1, d2) / 2
+    const radius = Math.min(turnRadius, tanHalf * maxTangent)
+    const tangent = radius / tanHalf
+    const entry = { x: corner.x - u1.x * tangent, y: corner.y - u1.y * tangent }
+    const exit = { x: corner.x + u2.x * tangent, y: corner.y + u2.y * tangent }
+    const sweep = u1.x * u2.y - u1.y * u2.x > 0 ? 1 : 0
+    path += ` L ${fmt(entry)} A ${round(radius)} ${round(radius)} 0 0 ${sweep} ${fmt(exit)}`
+    length += distance(cursor, entry) + radius * turn
+    cursor = exit
+  }
+  return { path, length, start: pts[0], end: pts[pts.length - 1] }
 }
 
 export function createOrbitRoute(center: Point, radius: number, laps: number, clockwise: boolean) {

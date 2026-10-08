@@ -7,9 +7,12 @@ export function TypeIcon({ type, size = 18 }: { type: VehicleType; size?: number
     </span>
   )
 }
-export function StatusBadge({ status }: { status: string }) {
+export type BadgeTone = 'ok' | 'warn' | 'bad' | 'muted'
+export function StatusBadge({ status, tone }: { status: string; tone?: BadgeTone }) {
   return (
-    <span className={`badge badge-${status.toLowerCase().replaceAll(' ', '-')}`}>
+    <span
+      className={`badge badge-${status.toLowerCase().replaceAll(' ', '-')}${tone ? ` tone-${tone}` : ''}`}
+    >
       <i />
       {status.toUpperCase()}
     </span>

@@ -1,63 +1,54 @@
 import { useEffect, useSyncExternalStore } from 'react'
-import { simulatorFor, type FlightStage, type SimParams } from './flightSimulator'
+import {
+  simulatorFor,
+  type DriveInput,
+  type MissionStage,
+  type SimEvent,
+  type SimParams,
+  type TelemetryFrame,
+} from './missionSimulator'
 import type { Point } from './missionGeometry'
 
-export interface TelemetryFrame {
-  position: Point
-  heading: number
-  altitude: number
-  groundSpeed: number
-  distance: number
-  total: number
-  progress: number
-  phase: 'standby' | 'climb' | 'mission' | 'return' | 'landed'
-  battery: number
-  link: number
-  satellites: number
-  flightSeconds: number
-  /** Attitude in degrees: pitch nose-up positive, roll right-wing-down positive. */
-  pitch: number
-  roll: number
-  /** Climb rate in m/s, positive up. */
-  verticalSpeed: number
-  remainingMeters: number
-  remainingSeconds: number
-  waypoint: { index: number; total: number }
-}
+export type { TelemetryFrame } from './missionSimulator'
 
 export interface TelemetrySource {
   frame: TelemetryFrame | null
   trail: Point[]
   playing: boolean
   rate: number
-  stage: FlightStage
+  stage: MissionStage
+  events: SimEvent[]
   play: () => void
   pause: () => void
   reset: () => void
   setRate: (rate: number) => void
   arm: () => void
-  takeoff: () => void
+  launch: () => void
   hold: () => void
   resume: () => void
   returnHome: () => void
-  land: () => void
+  stop: () => void
   abort: () => void
+  takeControl: () => void
+  drive: (input: DriveInput) => void
+  resumeAuto: () => void
 }
 
 interface Options extends SimParams {
   vehicleId: string
-  /** Leave false until the plan is known; an empty path would otherwise reset a live flight. */
+  /** Leave false until the plan is known; an empty path would otherwise reset a live mission. */
   enabled?: boolean
 }
 
 /**
- * Binds a view to the vehicle's shared simulator, so Live Flight and Mission Planning show the
- * same flight at the same moment. The simulator survives navigation between the two.
+ * Binds a view to the vehicle's shared simulator, so the live workspace and the planner show
+ * the same mission at the same moment. The simulator survives navigation between the two.
  */
-export function useFlightSimulation(options: Options): TelemetrySource {
+export function useMissionSimulation(options: Options): TelemetrySource {
   const {
     vehicleId,
     enabled = true,
+    domain,
     pathKey,
     metersPerUnit,
     cruiseSpeed,
@@ -65,12 +56,18 @@ export function useFlightSimulation(options: Options): TelemetrySource {
     transitUnits,
     batteryStart,
     waypointCount,
+    stopUnits,
+    dwellSeconds,
+    acceptMeters,
+    enduranceMin,
   } = options
   const sim = simulatorFor(vehicleId)
   const [out, back] = transitUnits
+  const stopsKey = (stopUnits ?? []).map(s => s.toFixed(1)).join(',')
   useEffect(() => {
     if (!enabled) return
     sim.configure({
+      domain,
       pathKey,
       metersPerUnit,
       cruiseSpeed,
@@ -78,10 +75,15 @@ export function useFlightSimulation(options: Options): TelemetrySource {
       transitUnits: [out, back],
       batteryStart,
       waypointCount,
+      stopUnits: stopsKey ? stopsKey.split(',').map(Number) : [],
+      dwellSeconds,
+      acceptMeters,
+      enduranceMin,
     })
   }, [
     sim,
     enabled,
+    domain,
     pathKey,
     metersPerUnit,
     cruiseSpeed,
@@ -90,6 +92,10 @@ export function useFlightSimulation(options: Options): TelemetrySource {
     back,
     batteryStart,
     waypointCount,
+    stopsKey,
+    dwellSeconds,
+    acceptMeters,
+    enduranceMin,
   ])
   const state = useSyncExternalStore(sim.subscribe, sim.getState)
   return {
@@ -99,11 +105,14 @@ export function useFlightSimulation(options: Options): TelemetrySource {
     reset: sim.reset,
     setRate: sim.setRate,
     arm: sim.arm,
-    takeoff: sim.takeoff,
+    launch: sim.launch,
     hold: sim.hold,
     resume: sim.resume,
     returnHome: sim.returnHome,
-    land: sim.land,
+    stop: sim.stop,
     abort: sim.abort,
+    takeControl: sim.takeControl,
+    drive: sim.drive,
+    resumeAuto: sim.resumeAuto,
   }
 }
