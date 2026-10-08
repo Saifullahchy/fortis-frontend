@@ -44,6 +44,8 @@ class FlightSimulator {
   private traveled = 0
   private flightSeconds = 0
   /** Attitude integrated from the motion: bank from turn rate, nose-down with forward speed. */
+  /** Unrounded altitude from the last sample, for a clean vertical-speed derivative. */
+  private altitudeExact = 0
   private attitude = {
     pitch: 0,
     roll: 0,
@@ -245,7 +247,8 @@ class FlightSimulator {
     const ahead = path.getPointAtLength(Math.min(at + 3, total))
     const behind = path.getPointAtLength(Math.max(at - 3, 0))
     const heading = (Math.atan2(ahead.x - behind.x, behind.y - ahead.y) * 180) / Math.PI
-    const climbUnits = 60 / p.metersPerUnit
+    // Climb/descent ramp over ~250 m of track: ~5 m/s at cruise speed, like a real multirotor.
+    const climbUnits = 250 / p.metersPerUnit
     const done = at >= total
     const airborne = isAirborne(stage)
     const phase: TelemetryFrame['phase'] = done
@@ -262,6 +265,7 @@ class FlightSimulator {
     // An RTL leg starts at cruise altitude; only the original takeoff ramps up.
     const up = stage === 'returning' ? 1 : Math.min(at / climbUnits, 1)
     const down = Math.min((total - at) / climbUnits, 1)
+    this.altitudeExact = p.cruiseAltitude * Math.min(up, down)
     const before = this.flownBefore * p.metersPerUnit
     const minutes = this.flightSeconds / 60
     const battery = Math.max(0, Math.round(p.batteryStart - minutes * (100 / ENDURANCE_MIN)))
@@ -305,8 +309,8 @@ class FlightSimulator {
     const dSpeed = dt > 0 ? (frame.groundSpeed - a.lastSpeed) / dt : 0
     a.lastSpeed = frame.groundSpeed
     // Vertical speed from the altitude profile, smoothed like a baro-derived climb rate.
-    const rawVs = dt > 0 ? (frame.altitude - a.lastAltitude) / dt : 0
-    a.lastAltitude = frame.altitude
+    const rawVs = dt > 0 ? (this.altitudeExact - a.lastAltitude) / dt : 0
+    a.lastAltitude = this.altitudeExact
     a.verticalSpeed += (rawVs - a.verticalSpeed) * (1 - Math.exp(-dt * 3))
     const airborne = frame.altitude > 0
     const forward = frame.groundSpeed > 0 && frame.phase !== 'climb'
