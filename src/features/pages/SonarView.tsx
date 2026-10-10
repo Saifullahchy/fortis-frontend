@@ -1,4 +1,4 @@
-import { Maximize2, Minimize2 } from 'lucide-react'
+import { Maximize2, Minimize2 } from '../../components/icons'
 import { useEffect, useRef } from 'react'
 import type { TelemetryFrame } from './missionSimulator'
 import { BEAMS, BINS, FAN_DEG, PING_MS, RANGE_M, computeReturns } from './sonarMosaic'

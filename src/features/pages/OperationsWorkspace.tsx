@@ -26,7 +26,7 @@ import {
   ShieldCheck,
   Target,
   Waves,
-} from 'lucide-react'
+} from '../../components/icons'
 import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { useGetMissionsQuery } from '../../services/api/baseApi'
@@ -261,6 +261,7 @@ export function OperationsWorkspace({ vehicle }: { vehicle: Vehicle }) {
         <section
           className={`drone-primary-view${feedPrimary ? ' feed-primary' : ''}`}
           data-drag-host
+          data-tour="live-view"
         >
           <FlightView3D
             profile={profile}
@@ -331,7 +332,7 @@ export function OperationsWorkspace({ vehicle }: { vehicle: Vehicle }) {
             </div>
           </div>
           {plan && (
-            <div className="live-progress">
+            <div className="live-progress" data-tour="live-progress">
               <span>
                 <label>MISSION</label>
                 <b>{plan.mission.name}</b>
@@ -397,7 +398,7 @@ export function OperationsWorkspace({ vehicle }: { vehicle: Vehicle }) {
               onSwap={() => setPrimary(p => (p === 'sonar' ? 'map' : 'sonar'))}
             />
           )}
-          <div className="instruments">
+          <div className="instruments" data-tour="instruments">
             {under && frame.water && (
               <DepthGauge
                 depth={frame.water.depth}
@@ -465,12 +466,13 @@ export function OperationsWorkspace({ vehicle }: { vehicle: Vehicle }) {
               <div className="mp-body">
                 <section>
                   <label>{profile.words.commandsLabel}</label>
-                  <div className="cmd-grid">
+                  <div className="cmd-grid" data-tour="cmd-grid">
                     <CmdButton
                       icon={<ShieldCheck />}
                       label={stage === 'armed' ? `${profile.commands.arm}D` : profile.commands.arm}
                       disabled={!plan || stage !== 'standby'}
                       onClick={telemetry.arm}
+                      tour="cmd-arm"
                     />
                     <CmdButton
                       icon={air ? <PlaneTakeoff /> : under ? <Waves /> : <Play />}
@@ -478,12 +480,14 @@ export function OperationsWorkspace({ vehicle }: { vehicle: Vehicle }) {
                       accent
                       disabled={stage !== 'armed'}
                       onClick={telemetry.launch}
+                      tour="cmd-launch"
                     />
                     <CmdButton
                       icon={stage === 'holding' ? <Play /> : <Pause />}
                       label={stage === 'holding' ? profile.commands.resume : profile.commands.hold}
                       disabled={!active || manual}
                       onClick={stage === 'holding' ? telemetry.resume : telemetry.hold}
+                      tour="cmd-hold"
                     />
                     <CmdButton
                       icon={<Home />}
@@ -491,6 +495,7 @@ export function OperationsWorkspace({ vehicle }: { vehicle: Vehicle }) {
                       confirm={`CONFIRM ${profile.commands.return}`}
                       disabled={!active || stage === 'returning'}
                       onClick={telemetry.returnHome}
+                      tour="cmd-return"
                     />
                     <CmdButton
                       icon={air ? <PlaneLanding /> : water && !under ? <Anchor /> : <CircleStop />}
@@ -498,6 +503,7 @@ export function OperationsWorkspace({ vehicle }: { vehicle: Vehicle }) {
                       confirm={`CONFIRM ${profile.commands.stop}`}
                       disabled={!active}
                       onClick={telemetry.stop}
+                      tour="cmd-stop"
                     />
                     <CmdButton
                       icon={<Octagon />}
@@ -506,6 +512,7 @@ export function OperationsWorkspace({ vehicle }: { vehicle: Vehicle }) {
                       confirm={`CONFIRM ${profile.commands.abort}`}
                       disabled={stage === 'standby' || stage === 'aborted' || stage === 'complete'}
                       onClick={telemetry.abort}
+                      tour="cmd-abort"
                     />
                   </div>
                   {(stage === 'complete' || stage === 'aborted') && (
@@ -793,7 +800,7 @@ export function OperationsWorkspace({ vehicle }: { vehicle: Vehicle }) {
           </PanelDock>
         </section>
 
-        <footer className="drone-telemetry-strip">
+        <footer className="drone-telemetry-strip" data-tour="telemetry-strip">
           {strip.map(item => (
             <Telemetry
               key={item.label}
@@ -824,6 +831,7 @@ function CmdButton({
   danger,
   disabled,
   onClick,
+  tour,
 }: {
   icon: ReactNode
   label: string
@@ -832,6 +840,8 @@ function CmdButton({
   danger?: boolean
   disabled?: boolean
   onClick: () => void
+  /** Walkthrough anchor (data-tour). */
+  tour?: string
 }) {
   const [pending, setPending] = useState(false)
   const timer = useRef(0)
@@ -849,6 +859,7 @@ function CmdButton({
     <button
       className={`cmd-btn${accent ? ' accent' : ''}${danger ? ' danger' : ''}${pending ? ' pending' : ''}`}
       disabled={disabled}
+      data-tour={tour}
       onClick={press}
     >
       {icon}

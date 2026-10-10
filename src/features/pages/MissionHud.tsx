@@ -1,4 +1,4 @@
-import { Pause, Play, RotateCcw } from 'lucide-react'
+import { Pause, Play, RotateCcw } from '../../components/icons'
 import { useEffect, useState } from 'react'
 import type { Point } from './missionGeometry'
 import type { TelemetrySource } from './useMissionSimulation'
@@ -83,19 +83,19 @@ export function SimulationHud({
   const f = sim.frame
   const eta = f && f.groundSpeed ? (f.total - f.distance) / f.groundSpeed : 0
   return (
-    <div className="sim-hud">
+    <div className="sim-hud" data-tour="sim-hud">
       <div className="sim-head">
         <span className={`sim-phase ${f?.phase ?? 'standby'}`}>
           SIM · {(f?.phase ?? 'standby').toUpperCase()}
         </span>
-        <div className="sim-rates">
+        <div className="sim-rates" data-tour="sim-rates">
           {RATES.map(r => (
             <button key={r} className={sim.rate === r ? 'on' : ''} onClick={() => sim.setRate(r)}>
               {r}×
             </button>
           ))}
         </div>
-        <div className="view-switch" role="group" aria-label="Map view">
+        <div className="view-switch" role="group" aria-label="Map view" data-tour="sim-view">
           <button className={view3d ? '' : 'on'} onClick={() => onSetView(false)}>
             2D
           </button>
@@ -105,6 +105,7 @@ export function SimulationHud({
         </div>
         <button
           className="sim-btn"
+          data-tour="sim-play"
           disabled={disabled}
           onClick={sim.playing ? sim.pause : sim.play}
           title={sim.playing ? 'Pause simulation' : profile.words.playTitle}
@@ -115,7 +116,7 @@ export function SimulationHud({
           <RotateCcw />
         </button>
       </div>
-      <div className="sim-bar">
+      <div className="sim-bar" data-tour="sim-bar">
         <i style={{ width: `${(f?.progress ?? 0) * 100}%` }} />
       </div>
       <dl>

@@ -1,4 +1,4 @@
-import { Crosshair, Layers3, LocateFixed, Minus, Navigation, Plus, ScanLine } from 'lucide-react'
+import { Crosshair, Layers3, LocateFixed, Minus, Navigation, Plus, ScanLine } from '../../components/icons'
 import { useAppDispatch, useAppSelector } from '../../store/hooks'
 import { actions } from '../../store'
 import { useGetVehiclesQuery } from '../../services/api/baseApi'

@@ -1,4 +1,4 @@
-import { ChevronRight, Radio, Search } from 'lucide-react'
+import { ChevronRight, Radio, Search } from '../../components/icons'
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { BatteryMeter, StatusBadge, TypeIcon } from '../../components/common'
@@ -182,7 +182,7 @@ export function MissionBoard() {
         />
         <span>{rows.length} MISSIONS</span>
       </div>
-      <section className="mission-board">
+      <section className="mission-board" data-tour="mission-board">
         <table>
           <thead>
             <tr>
@@ -238,8 +238,20 @@ export function MissionBoard() {
                   <td>{row.eta}</td>
                   <td>{row.updated}</td>
                   <td className="board-actions">
-                    <Link to={`/missions/${row.vehicle.id}`}>Plan</Link>
-                    {profile.live && <Link to={`/vehicles/${row.vehicle.id}`}>Live</Link>}
+                    <Link
+                      to={`/missions/${row.vehicle.id}`}
+                      data-tour={`mission-plan-${row.vehicle.id}`}
+                    >
+                      Plan
+                    </Link>
+                    {profile.live && (
+                      <Link
+                        to={`/vehicles/${row.vehicle.id}`}
+                        data-tour={`mission-live-${row.vehicle.id}`}
+                      >
+                        Live
+                      </Link>
+                    )}
                   </td>
                 </tr>
               )

@@ -1,4 +1,4 @@
-import { ArrowLeft, Battery, Route, Video, Wifi } from 'lucide-react'
+import { ArrowLeft, Battery, Route, Video, Wifi } from '../../components/icons'
 import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { StatusBadge, TypeIcon, type BadgeTone } from '../../components/common'

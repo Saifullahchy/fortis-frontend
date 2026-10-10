@@ -1,9 +1,10 @@
-import { ChevronDown, ChevronUp, GripHorizontal } from 'lucide-react'
+import { ChevronDown, ChevronUp, GripHorizontal } from '../icons'
 import {
   Children,
   createContext,
   isValidElement,
   useContext,
+  useEffect,
   useRef,
   useState,
   type CSSProperties,
@@ -154,10 +155,23 @@ export function FloatingPanel({
   const { ref, style, startDrag, floating } = useDragPanel(
     dock && id ? rect => dock.drop(id, rect) : undefined,
   )
+  // Automation (the guided demo) can open or collapse a panel by dispatching
+  // `fortis:panel` on the element with `detail: { open: boolean }`.
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const onSignal = (event: Event) => {
+      const detail = (event as CustomEvent<{ open?: boolean }>).detail
+      if (typeof detail?.open === 'boolean') setOpen(detail.open)
+    }
+    el.addEventListener('fortis:panel', onSignal)
+    return () => el.removeEventListener('fortis:panel', onSignal)
+  }, [ref])
   return (
     <aside
       ref={ref}
       data-panel-id={id}
+      data-panel-signal=""
       className={`mission-panel ${className}${open ? '' : ' collapsed'}${floating ? ' floating' : ''}`}
       style={{ ...placement, ...style }}
     >
