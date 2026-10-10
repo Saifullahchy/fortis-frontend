@@ -1,4 +1,12 @@
-import { Activity, Broadcast, PanelLeftClose, PanelLeftOpen, Path, SlidersHorizontal } from '../icons'
+import {
+  Activity,
+  Broadcast,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Path,
+  Play,
+  SlidersHorizontal,
+} from '../icons'
 import { Logo } from '../Logo'
 import { NavLink, useLocation } from 'react-router-dom'
 import { useEffect, useState, type ReactNode } from 'react'
@@ -51,7 +59,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className={`shell${collapsed ? ' collapsed' : ''}`}>
-      <aside className="sidebar">
+      <aside className="sidebar" data-tour="sidebar">
         <div className="brand">
           <div className="mark">
             <Logo size={34} />
@@ -63,7 +71,13 @@ export function AppShell({ children }: { children: ReactNode }) {
         </div>
         <nav>
           {items.map(([to, name, Icon]) => (
-            <NavLink key={to} to={to} end={to === '/'} title={name}>
+            <NavLink
+              key={to}
+              to={to}
+              end={to === '/'}
+              title={name}
+              data-tour={`nav-${name.toLowerCase()}`}
+            >
               <span className="nav-icon">
                 <Icon size={18} />
               </span>
@@ -72,6 +86,12 @@ export function AppShell({ children }: { children: ReactNode }) {
           ))}
         </nav>
         <div className="sidebar-foot">
+          <NavLink to="/demo" className="sidebar-demo" title="Interactive demo">
+            <span className="nav-icon">
+              <Play size={16} />
+            </span>
+            <span className="nav-label">Interactive demo</span>
+          </NavLink>
           <div className="sysline" title="Platform nominal · all core services online">
             <Activity size={16} />
             <span>
@@ -97,7 +117,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <em title={place?.region ? `${place.region}` : undefined}>{placeLabel(place)}</em>
           </div>
           <div className="top-stats">
-            <span>
+            <span data-tour="live-badge">
               <i className="pulse" /> LIVE SIMULATION
             </span>
             <span>UTC+06:00</span>

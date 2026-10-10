@@ -83,7 +83,7 @@ const PATTERNS: Array<{ id: Pattern; label: string }> = [
   { id: 'zigzag', label: 'Zig-zag' },
 ]
 
-function emptyDraft(profile: VehicleProfile): PlannerDraft {
+export function emptyDraft(profile: VehicleProfile): PlannerDraft {
   return {
     planMode: profile.modes[0].id,
     params: defaultParams(profile),
@@ -675,6 +675,7 @@ function MissionWorkspace({ vehicleId }: { vehicleId: string }) {
     <footer className="mp-footer">
       <button
         className="mp-btn primary block"
+        data-tour="plan-upload"
         disabled={locked || planBlocked || !route || saving || uploading || uploaded}
         onClick={async () => {
           if (dirty) await savePlan()
@@ -700,7 +701,7 @@ function MissionWorkspace({ vehicleId }: { vehicleId: string }) {
             : `Draft saved · not on the ${profile.words.craft} yet`}
       </small>
       {uploaded && profile.live && (
-        <Link className="mp-btn block" to={`/vehicles/${vehicle.id}`}>
+        <Link className="mp-btn block" to={`/vehicles/${vehicle.id}`} data-tour="plan-open-live">
           {profile.words.openLive}
         </Link>
       )}
@@ -711,6 +712,7 @@ function MissionWorkspace({ vehicleId }: { vehicleId: string }) {
   const pointPresets = Object.keys(mode.closed ? profile.presets.loop : profile.presets.points)
   const zonesSection = (
     <PanelSection
+      tour="plan-zones"
       title={obstacles ? 'Obstacles' : 'Exclusion zones'}
       meta={drawingZone ? 'Drawing' : draft.zones.length ? `${draft.zones.length} placed` : 'None'}
     >
@@ -886,7 +888,7 @@ function MissionWorkspace({ vehicleId }: { vehicleId: string }) {
             </button>
           }
         >
-          <div className="mp-modes">
+          <div className="mp-modes" data-tour="plan-modes">
             {profile.modes.map(item => (
               <button
                 key={item.id}
@@ -911,6 +913,7 @@ function MissionWorkspace({ vehicleId }: { vehicleId: string }) {
             {geometry === 'area' && (
               <>
                 <PanelSection
+                  tour="plan-area"
                   title={`${mode.label} area`}
                   meta={draft.boundaryComplete ? `${draft.surveyPoints.length} points` : 'Drawing'}
                 >
@@ -935,6 +938,7 @@ function MissionWorkspace({ vehicleId }: { vehicleId: string }) {
                   </div>
                   <div className="mp-label">Presets</div>
                   <PresetChips
+                    tour="plan-presets"
                     names={[
                       ...Object.keys(profile.presets.area),
                       ...(draft.customSurvey ? ['Custom plan'] : []),
@@ -997,6 +1001,7 @@ function MissionWorkspace({ vehicleId }: { vehicleId: string }) {
             )}
             {geometry === 'points' && (
               <PanelSection
+                tour="plan-points"
                 title={streetMode ? 'Targets' : 'Waypoints'}
                 meta={draft.waypoints.length ? `${draft.waypoints.length} placed` : 'Empty'}
               >
@@ -1026,6 +1031,7 @@ function MissionWorkspace({ vehicleId }: { vehicleId: string }) {
                   <>
                     <div className="mp-label">Presets</div>
                     <PresetChips
+                      tour="plan-point-presets"
                       names={pointPresets}
                       active={draft.activePreset[draft.planMode] ?? ''}
                       onPick={applyPointPreset}
@@ -1164,7 +1170,11 @@ function MissionWorkspace({ vehicleId }: { vehicleId: string }) {
             )}
             {obstacles && zonesSection}
             {geometry === 'orbit' && (
-              <PanelSection title="Target" meta={draft.orbitCenter ? 'Placed' : 'Not placed'}>
+              <PanelSection
+                tour="plan-orbit"
+                title="Target"
+                meta={draft.orbitCenter ? 'Placed' : 'Not placed'}
+              >
                 <div className="mp-row">
                   <button
                     className="mp-btn"
@@ -1179,6 +1189,7 @@ function MissionWorkspace({ vehicleId }: { vehicleId: string }) {
                 </div>
                 <div className="mp-label">Presets</div>
                 <PresetChips
+                  tour="plan-orbit-presets"
                   names={Object.keys(profile.presets.orbit)}
                   active={draft.activePreset[draft.planMode] ?? ''}
                   onPick={applyOrbitPreset}
@@ -1223,7 +1234,11 @@ function MissionWorkspace({ vehicleId }: { vehicleId: string }) {
               </PanelSection>
             )}
             {geometry === 'maneuver' && (
-              <PanelSection title="Maneuver" meta={draft.anchor ? 'Placed' : 'Not placed'}>
+              <PanelSection
+                tour="plan-maneuver"
+                title="Maneuver"
+                meta={draft.anchor ? 'Placed' : 'Not placed'}
+              >
                 <div className="mp-label">Pattern</div>
                 <div className="mp-chips">
                   {PATTERNS.map(item => (
@@ -1241,6 +1256,7 @@ function MissionWorkspace({ vehicleId }: { vehicleId: string }) {
                 </div>
                 <div className="mp-label">Presets</div>
                 <PresetChips
+                  tour="plan-maneuver-presets"
                   names={Object.keys(profile.presets.maneuver)}
                   active={draft.activePreset[draft.planMode] ?? ''}
                   onPick={applyManeuverPreset}
@@ -1313,10 +1329,10 @@ function MissionWorkspace({ vehicleId }: { vehicleId: string }) {
           defaultOpen={false}
         >
           <div className={`mp-body${locked ? ' locked' : ''}`}>
-            <PanelSection title={profile.words.primaryGroup}>
+            <PanelSection tour="plan-params" title={profile.words.primaryGroup}>
               {primaryParams.map(paramRange)}
             </PanelSection>
-            <PanelSection title="Failsafe">
+            <PanelSection tour="plan-failsafe" title="Failsafe">
               {failsafeParams.map(paramRange)}
               <div className="mp-label">On link loss</div>
               <div className="mp-chips">
@@ -1381,15 +1397,18 @@ function PanelSection({
   title,
   meta,
   action,
+  tour,
   children,
 }: {
   title: string
   meta?: string
   action?: ReactNode
+  /** Walkthrough anchor (data-tour). */
+  tour?: string
   children: ReactNode
 }) {
   return (
-    <section className="mp-section">
+    <section className="mp-section" data-tour={tour}>
       <div className="mp-section-head">
         <h3>{title}</h3>
         {meta && <span>{meta}</span>}
@@ -1441,13 +1460,15 @@ function PresetChips({
   names,
   active,
   onPick,
+  tour,
 }: {
   names: string[]
   active: string
   onPick: (name: string) => void
+  tour?: string
 }) {
   return (
-    <div className="mp-chips">
+    <div className="mp-chips" data-tour={tour}>
       {names.map(name => (
         <button className={active === name ? 'active' : ''} key={name} onClick={() => onPick(name)}>
           {name}

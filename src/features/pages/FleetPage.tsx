@@ -360,11 +360,15 @@ export function FleetPage() {
                 Vehicles <span className="count">{fleet.length}</span>
               </h1>
             </div>
-            <button className="primary" onClick={() => setAdding({ type: 'UAV', chosen: false })}>
+            <button
+              className="primary"
+              data-tour="fleet-add"
+              onClick={() => setAdding({ type: 'UAV', chosen: false })}
+            >
               + ADD VEHICLE
             </button>
           </div>
-          <div className="fleet-stats">
+          <div className="fleet-stats" data-tour="fleet-stats">
             <span>
               <b>{online}</b> online
             </span>
@@ -375,9 +379,9 @@ export function FleetPage() {
               <b>{attention}</b> need attention
             </span>
           </div>
-          <div className="fleet-grid">
+          <div className="fleet-grid" data-tour="fleet-grid">
             {fleet.map(v => (
-              <article key={v.id} className="fleet-card">
+              <article key={v.id} className="fleet-card" data-tour={`fleet-card-${v.id}`}>
                 <Link to={`/vehicles/${v.id}`} className="fleet-card-main">
                   <div className="fleet-card-top">
                     <span className="mission-domain-icon">
