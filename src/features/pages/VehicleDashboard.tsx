@@ -8,7 +8,7 @@ import {
   Octagon,
   Radio,
   ShieldCheck,
-} from 'lucide-react'
+} from '../../components/icons'
 import { Link, useParams } from 'react-router-dom'
 import { useGetVehicleQuery } from '../../services/api/baseApi'
 import { useAppDispatch, useAppSelector } from '../../store/hooks'

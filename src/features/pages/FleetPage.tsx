@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Check, Plus, Radio, Route, RotateCcw, Trash2, X } from 'lucide-react'
+import { Check, Plus, Radio, Route, RotateCcw, Trash2, X } from '../../components/icons'
 import {
   useAddVehicleMutation,
   useGetVehiclesQuery,

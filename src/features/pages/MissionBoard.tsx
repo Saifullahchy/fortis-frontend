@@ -1,4 +1,4 @@
-import { ChevronRight, Radio, Search } from 'lucide-react'
+import { ChevronRight, Radio, Search } from '../../components/icons'
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { BatteryMeter, StatusBadge, TypeIcon } from '../../components/common'

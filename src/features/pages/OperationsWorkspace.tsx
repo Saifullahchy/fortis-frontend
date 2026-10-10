@@ -26,7 +26,7 @@ import {
   ShieldCheck,
   Target,
   Waves,
-} from 'lucide-react'
+} from '../../components/icons'
 import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { useGetMissionsQuery } from '../../services/api/baseApi'

@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronUp, GripHorizontal } from 'lucide-react'
+import { ChevronDown, ChevronUp, GripHorizontal } from '../icons'
 import {
   Children,
   createContext,

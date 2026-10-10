@@ -1,4 +1,4 @@
-import { LocateFixed, LocateOff } from 'lucide-react'
+import { LocateFixed, LocateOff } from '../../components/icons'
 import { useEffect, useState } from 'react'
 import { placeLabel, useHome, useHomePlace } from './homePosition'
 

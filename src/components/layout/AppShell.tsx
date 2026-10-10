@@ -1,5 +1,5 @@
-import { Activity, PanelLeftClose, PanelLeftOpen, SlidersHorizontal, Target } from 'lucide-react'
-import { Path, Broadcast } from '@phosphor-icons/react'
+import { Activity, Broadcast, PanelLeftClose, PanelLeftOpen, Path, SlidersHorizontal } from '../icons'
+import { Logo } from '../Logo'
 import { NavLink, useLocation } from 'react-router-dom'
 import { useEffect, useState, type ReactNode } from 'react'
 import {
@@ -54,7 +54,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       <aside className="sidebar">
         <div className="brand">
           <div className="mark">
-            <Target size={21} />
+            <Logo size={34} />
           </div>
           <div className="brand-text">
             <strong>FORTIS</strong>
@@ -65,7 +65,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           {items.map(([to, name, Icon]) => (
             <NavLink key={to} to={to} end={to === '/'} title={name}>
               <span className="nav-icon">
-                <Icon size={18} weight="regular" />
+                <Icon size={18} />
               </span>
               <span className="nav-label">{name}</span>
             </NavLink>

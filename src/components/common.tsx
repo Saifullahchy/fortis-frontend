@@ -1,4 +1,4 @@
-import { Battery, Wifi } from 'lucide-react'
+import { Battery, Wifi } from './icons'
 import type { Vehicle, VehicleType } from '../types/domain'
 export function TypeIcon({ type, size = 18 }: { type: VehicleType; size?: number }) {
   return (

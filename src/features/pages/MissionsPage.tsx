@@ -9,7 +9,7 @@ import {
   Route,
   ShieldCheck,
   Trash2,
-} from 'lucide-react'
+} from '../../components/icons'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
 import { MapStatusStrip, SimulationHud } from './MissionHud'

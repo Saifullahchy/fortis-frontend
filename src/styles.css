@@ -64,10 +64,10 @@ a {
   height: 36px;
   display: grid;
   place-items: center;
-  border: 1px solid #39605b;
-  background: #101f24;
-  color: var(--cyan);
-  clip-path: polygon(15% 0, 85% 0, 100% 50%, 85% 100%, 15% 100%, 0 50%);
+  color: #d4cfff;
+}
+.mark svg {
+  display: block;
 }
 .brand strong {
   font: 700 20px/1 var(--title);
@@ -1797,9 +1797,6 @@ a {
 .checkicon svg {
   width: 17px;
   color: var(--cyan);
-}
-.diagnostic .checkicon .lucide-triangle-alert {
-  color: var(--amber);
 }
 .placeholder {
   min-height: 300px;

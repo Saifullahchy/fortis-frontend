@@ -1,4 +1,4 @@
-import { Maximize2, Minimize2 } from 'lucide-react'
+import { Maximize2, Minimize2 } from '../../components/icons'
 import { useEffect, useState } from 'react'
 import type { TelemetryFrame } from './useMissionSimulation'
 import { toGeo } from './MissionHud'
